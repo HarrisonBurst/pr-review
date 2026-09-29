@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Known stateless document MCP profile",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "label",
+    "provider",
+    "transport",
+    "server",
+    "endpointPath",
+    "tool",
+    "preset"
+  ],
+  "properties": {
+    "id": { "type": "string", "pattern": "^[a-z0-9-]+/[0-9]+$" },
+    "label": { "type": "string", "maxLength": 200 },
+    "provider": { "enum": ["documents"] },
+    "transport": { "enum": ["stateless-http"] },
+    "endpointPath": { "enum": ["/mcp"] },
+    "server": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "protocol"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^[a-z0-9-]+$" },
+        "version": { "type": "string", "maxLength": 30 },
+        "protocol": { "enum": ["2025-03-26"] }
+      }
+    },
+    "tool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "id", "inputSchema"],
+      "properties": {
+        "name": { "enum": ["documents_get"] },
+        "id": { "enum": ["document"] },
+        "inputSchema": { "type": "object" }
+      }
+    },
+    "preset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "label", "allowedTools"],
+      "properties": {
+        "id": { "enum": ["read-context"] },
+        "label": { "type": "string", "maxLength": 200 },
+        "allowedTools": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": { "enum": ["document"] }
+        }
+      }
+    }
+  }
+}

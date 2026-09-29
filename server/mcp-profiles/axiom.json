@@ -1,0 +1,14 @@
+{
+  "id": "axiom-mcp/1",
+  "label": "Axiom MCP (app-owned OAuth)",
+  "endpoint": "https://mcp.axiom.co/mcp",
+  "resourceMetadataUrl": "https://mcp.axiom.co/.well-known/oauth-protected-resource/mcp",
+  "resource": "https://mcp.axiom.co/mcp",
+  "issuers": ["https://authorization.axiom.co"],
+  "origins": ["https://mcp.axiom.co", "https://authorization.axiom.co"],
+  "clientAuthMethods": ["none", "client_secret_basic", "client_secret_post"],
+  "dynamicRegistration": true,
+  "readScopes": ["openid", "offline_access"],
+  "readSupport": "supported",
+  "message": "Axiom supports browser OAuth with explicit public client registration. Sign in and choose your organization at Axiom; no native login is reused. openid and offline_access support sign-in and renewal, not read-only provider permissions. The host credential may carry your account's write access, but this broker exposes only separately approved bounded reads. Query results route through US infrastructure; queries can incur cost. Set role query-cost limits in Axiom if needed."
+}

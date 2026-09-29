@@ -1,0 +1,14 @@
+{
+  "id": "linear-mcp/1",
+  "label": "Linear MCP (app-owned OAuth)",
+  "endpoint": "https://mcp.linear.app/mcp",
+  "resourceMetadataUrl": "https://mcp.linear.app/.well-known/oauth-protected-resource/mcp",
+  "resource": "https://mcp.linear.app/mcp",
+  "issuers": ["https://mcp.linear.app"],
+  "origins": ["https://mcp.linear.app"],
+  "clientAuthMethods": ["none", "client_secret_basic", "client_secret_post"],
+  "dynamicRegistration": true,
+  "readScopes": ["read"],
+  "readSupport": "supported",
+  "message": "Use an eligible existing client or explicitly register this app with Linear using the advertised public-client method and read scope. Complete Linear sign-in and any local additional-capability decision, then Load tools and choose read grants. No native login is reused. Authentication and inventory alone are not successful review access."
+}

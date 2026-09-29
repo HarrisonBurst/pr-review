@@ -1,0 +1,34 @@
+{
+  "id": "pr-review-documents/1",
+  "label": "Stateless document reader (reference protocol, not a live service)",
+  "provider": "documents",
+  "transport": "stateless-http",
+  "server": {
+    "name": "pr-review-documents",
+    "version": "1",
+    "protocol": "2025-03-26"
+  },
+  "endpointPath": "/mcp",
+  "tool": {
+    "name": "documents_get",
+    "id": "document",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[A-Za-z0-9_-]+$"
+        }
+      },
+      "required": ["id"],
+      "additionalProperties": false
+    }
+  },
+  "preset": {
+    "id": "read-context",
+    "label": "Read explicitly scoped documents",
+    "allowedTools": ["document"]
+  }
+}

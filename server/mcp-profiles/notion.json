@@ -1,0 +1,14 @@
+{
+  "id": "notion-mcp/1",
+  "label": "Notion MCP (app-owned OAuth)",
+  "endpoint": "https://mcp.notion.com/mcp",
+  "resourceMetadataUrl": "https://mcp.notion.com/.well-known/oauth-protected-resource",
+  "resource": "https://mcp.notion.com",
+  "issuers": ["https://mcp.notion.com"],
+  "origins": ["https://mcp.notion.com"],
+  "clientAuthMethods": ["none", "client_secret_basic", "client_secret_post"],
+  "dynamicRegistration": true,
+  "readScopes": ["default"],
+  "readSupport": "supported",
+  "message": "Use an eligible client or explicitly register this app with Notion. The default OAuth capability allows reading and updating accessible workspace content; it is not a provider read-only scope. The broader credential stays host-side. Complete sign-in and any local additional-capability decision, then Load tools and separately grant notion-fetch. Writes, search and agent tools remain denied. No native login is reused, and authentication/inventory is not successful content-read evidence."
+}

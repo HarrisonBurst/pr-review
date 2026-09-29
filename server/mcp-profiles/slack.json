@@ -1,0 +1,20 @@
+{
+  "id": "slack-mcp/1",
+  "label": "Slack MCP (app-owned OAuth)",
+  "endpoint": "https://mcp.slack.com/mcp",
+  "resourceMetadataUrl": "https://mcp.slack.com/.well-known/oauth-protected-resource",
+  "resource": "https://mcp.slack.com",
+  "issuers": ["https://mcp.slack.com"],
+  "origins": ["https://mcp.slack.com", "https://slack.com"],
+  "clientAuthMethods": ["none", "client_secret_basic", "client_secret_post"],
+  "publicClientPolicy": "slack-pkce",
+  "dynamicRegistration": false,
+  "readScopes": [
+    "search:read.public",
+    "search:read.private",
+    "channels:history",
+    "groups:history"
+  ],
+  "readSupport": "unavailable",
+  "message": "Reuse an eligible existing Slack app where its registration and redirect support this broker; a new app is not inherently required. Explicitly select none only for an existing PKCE-enabled public client. The Slack desktop-PKCE policy permits this choice even when server metadata lists only confidential methods; it does not claim none was advertised or verify this registration. Otherwise use advertised confidential authentication. Workspace approval and explicit user consent remain required. Exact MCP read schemas, verified account/workspace identity and channel-scoped search enforcement must be vetted before any tools can be granted. No Claude login or slack-axi credentials are reused."
+}

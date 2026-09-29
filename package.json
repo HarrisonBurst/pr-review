@@ -1,0 +1,35 @@
+{
+  "name": "pr-review",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "web"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "dev:backend": "tsx server/index.ts",
+    "build": "tsc -p tsconfig.json && node scripts/workspace.mjs build",
+    "start": "node dist/server/index.js",
+    "test": "node --import tsx --test server/test/*.test.ts && node scripts/workspace.mjs test",
+    "typecheck": "tsc -p tsconfig.json --noEmit && node scripts/workspace.mjs typecheck",
+    "check:review-output": "tsx server/check-output.ts",
+    "format": "prettier --write server scripts package.json tsconfig.json README.md && node scripts/workspace.mjs format",
+    "format:check": "prettier --check server scripts package.json tsconfig.json README.md && node scripts/workspace.mjs format:check"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "prettier": "^3.6.2",
+    "tsx": "^4.20.3",
+    "typescript": "^5.9.2"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/client": "2.1.0",
+    "@napi-rs/keyring": "2.1.0",
+    "oauth4webapi": "3.8.8",
+    "smol-toml": "1.4.2"
+  }
+}
