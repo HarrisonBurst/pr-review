@@ -11,7 +11,9 @@ npm ci
 npm run dev
 ```
 
-The backend listens on `127.0.0.1:4317`; Vite on `127.0.0.1:5173` proxies `/api` there. For credential-free UI work use `npm run dev:mock --workspace web -- --host 127.0.0.1 --port 5174 --strictPort` instead. It is explicitly labeled and has seeded drafts; `/?setup` exercises empty onboarding. The mock resets on reload. [README](README.md#try-the-ui-without-credentials) also describes the real backend's disposable demo mode, which refuses ordinary native review dispatch.
+The backend listens on `127.0.0.1:4317`; Vite on `127.0.0.1:5173` proxies `/api` there. For credential-free UI work use `npm run dev:mock --workspace web -- --host 127.0.0.1 --port 5174 --strictPort` instead. It is explicitly labeled and has seeded drafts; `/?setup` exercises empty onboarding. The mock resets on reload.
+
+[README](README.md#try-the-ui-without-credentials) also describes the real backend's disposable demo mode, which refuses ordinary native review dispatch.
 
 Run relevant fixture tests first, then the full checks once:
 
@@ -23,9 +25,15 @@ npm test
 npm run build
 ```
 
-Root scripts include the web workspace. There is no separate lint command. `npm run format` formats the existing script scope; new root documentation and workflow files can be checked with `npx --no-install prettier --check CONTRIBUTING.md SECURITY.md docs/publication-readiness.md .github`. CI checks those explicitly too. Use the lockfile's installed tools, not an unpinned downloaded formatter.
+Root scripts include the web workspace. For backend-only fixtures, run `node --import tsx --test server/test/*.test.ts` from the root. There is no separate lint command.
 
-The default tests use deterministic fixtures. Docker/native-bundle and real Keychain cases are opt-in and skipped unless their documented test environment is explicitly provided; CI does not enable them. Do not supply production credentials, run live model/provider requests, submit GitHub reviews or enable polling for tests. Never execute PR-provided scripts, hooks or agent configuration. Use disposable data and clearly labeled fixtures when exercising a real browser.
+`npm run format` formats the existing script scope. Check shared contracts and canonical docs explicitly with `npx --no-install prettier --check shared/contracts.ts API_CONTRACT.md EXECUTION_BOUNDARY.md docs`. CI also checks `CONTRIBUTING.md`, `SECURITY.md`, `docs/publication-readiness.md` and `.github` explicitly.
+
+Use the lockfile's installed tools, not an unpinned downloaded formatter. For a production build, run `npm run build`, then `npm start` from the root. See the [README setup guide](README.md#install-build-and-run).
+
+The default tests use deterministic fixtures. Docker/native-bundle and real Keychain cases are opt-in and skipped unless their documented test environment is explicitly provided; CI does not enable them.
+
+Do not supply production credentials, run live model/provider requests, submit GitHub reviews or enable polling for tests. Never execute PR-provided scripts, hooks or agent configuration. Use disposable data and clearly labeled fixtures when exercising a real browser.
 
 ## Change boundaries
 
