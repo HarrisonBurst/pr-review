@@ -20,7 +20,10 @@ beforeEach(() => {
   window.location.hash = "#/settings";
   vi.spyOn(window, "open").mockImplementation(() => null);
 });
-afterEach(() => uninstall());
+afterEach(() => {
+  uninstall();
+  vi.restoreAllMocks();
+});
 
 it("guides Axiom public registration and separate unchecked reads without asking for an Axiom token", async () => {
   const user = mount();

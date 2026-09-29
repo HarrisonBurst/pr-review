@@ -1496,7 +1496,14 @@ describe("freshness", () => {
 
   it("groups run metadata and secondary badges into separate rows", async () => {
     window.location.hash = "#/pr/pr-482";
+    let releaseCheck = () => {};
+    const heldCheck = new Promise<void>((resolve) => (releaseCheck = resolve));
     mount({ remoteHead: { "pr-482": NEW_HEAD } }, (b) => {
+      const handle = b.handle.bind(b);
+      b.handle = (method, path, body) =>
+        path.endsWith("/check")
+          ? heldCheck.then(() => handle(method, path, body))
+          : handle(method, path, body);
       b.runs["pr-482"]!.push({
         ...b.runs["pr-482"]![1]!,
         id: "run-live",
@@ -1509,6 +1516,9 @@ describe("freshness", () => {
     const runs = await screen.findByRole("region", { name: "Runs" });
     const running = (await within(runs).findByText("Running")).closest("summary")!;
     expect(running.querySelector(".run-meta")).toHaveTextContent(/^feedfac.*ago$/);
+    expect(running.querySelector(".run-badges")).toHaveTextContent(/^older commit$/);
+    releaseCheck();
+    await screen.findByText("The latest review is stale.");
     expect(running.querySelector(".run-badges")).toBeNull();
     const source = within(runs).getByText("latest draft").closest("summary")!;
     expect(source.querySelector(".run-meta")).toHaveTextContent(
@@ -1737,15 +1747,24 @@ describe("automation", () => {
   });
 
   it("summarizes background polling on the inbox from the global settings only", async () => {
-    mount();
-    expect(await screen.findByText(/Polling every 120s, last 3m ago\./)).toBeInTheDocument();
-    backend.updateAutomation("pr-475", { reviewNewCommits: "on" });
-    backend.updateSettings({ automation: { pollRequests: false, reviewRequests: false } });
-    expect(
-      await screen.findByText(
-        "Background polling is off. Sync manually or turn it on in Settings.",
-      ),
-    ).toBeInTheDocument();
+    const clock = vi.spyOn(Date, "now");
+    try {
+      mount(undefined, (b) => {
+        clock.mockReturnValue(new Date(b.health.lastPollAt!).getTime() + 180_000);
+      });
+      expect(await screen.findByText(/Polling every 120s, last 3m ago\./)).toBeInTheDocument();
+      clock.mockReturnValue(Date.now() + 60_000);
+      backend.updateAutomation("pr-475", { reviewNewCommits: "on" });
+      expect(await screen.findByText(/Polling every 120s, last 4m ago\./)).toBeInTheDocument();
+      backend.updateSettings({ automation: { pollRequests: false, reviewRequests: false } });
+      expect(
+        await screen.findByText(
+          "Background polling is off. Sync manually or turn it on in Settings.",
+        ),
+      ).toBeInTheDocument();
+    } finally {
+      clock.mockRestore();
+    }
   });
 });
 
