@@ -1,23 +1,37 @@
 # Local PR Review
 
-Local-first GitHub pull request review inbox for macOS. Node/TypeScript backend on `127.0.0.1:4317`, React UI, SQLite, immutable review evidence, editable drafts and explicit exact-payload publishing. Configure Claude Code, Codex or Pi with your own trusted review skill. See the [execution guide](docs/execution-modes.md), [shared API contract](API_CONTRACT.md) and [validation results and limits](docs/publication-readiness.md).
+Local PR Review is a single-user macOS app for reviewing GitHub pull requests with Claude Code, Codex or Pi and your own trusted review skill. It keeps review runs separate from editable drafts and requires an exact-payload preview before you publish through the app. A Node.js and TypeScript backend serves the React UI on `127.0.0.1:4317` and stores data in SQLite.
 
 ## Start here
 
-This is a single-user, local Mac application, not a hosted service. **Fresh Settings selects Dangerous intent: full host-native tools, configuration and authentication.** It cannot run until you explicitly Save with fresh risk confirmation. Prefer Isolated Harnesses or Docker when their documented limits fit; neither silently falls back to Dangerous. App preview protects app submissions, not writes made by Dangerous native tools.
+Fresh Settings selects Dangerous intent, which gives the selected harness full host-native tools, configuration and authentication. It cannot run until you explicitly Save and confirm the host risks. Dangerous tools can write files and publish outside the app's preview controls.
 
-Project code is licensed under [MIT](LICENSE). The bundled seccomp component retains its own [Apache-2.0 license](server/execution/LICENSE.seccomp); dependency and runtime licenses remain their own.
+Choose Isolated Harnesses or Docker when their documented limits fit your review skill. Neither mode falls back to Dangerous. This is a local application, not a hosted service.
+
+- [Install and run](#install-build-and-run), or [try the UI without credentials](#try-the-ui-without-credentials).
+- [Choose an execution mode](#supported-execution-and-settings) and [configure connections](#connections-and-read-permissions).
+- Learn about [automation](#automation-controls), [the inbox](#inbox-groups-and-ordering) and [drafts](#review-drafts).
+- See the [execution guide](docs/execution-modes.md), [API contract](API_CONTRACT.md) and [validation results and limits](docs/publication-readiness.md) for details.
+
+Project code uses the [MIT license](LICENSE). The bundled seccomp component retains its [Apache-2.0 license](server/execution/LICENSE.seccomp). Dependencies and separately installed runtimes retain their own licenses.
 
 ### Prerequisites
 
-- macOS, Node.js 24 or newer (Node 24 is the CI baseline), npm and Git. Node's built-in SQLite is used; no database service is needed.
-- For real repository use, install the official [GitHub CLI (`gh`)](https://cli.github.com/) and authenticate it yourself with access to the repository. Check `gh auth status`. The application invokes `gh`, not an agent-specific wrapper.
-- For AI work, separately install and authenticate the selected [Claude Code](https://code.claude.com/docs/en/setup), [Codex](https://github.com/openai/codex) or [Pi](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent) CLI using its supported native setup. Install a trusted review skill yourself. The default `~/.claude/skills/pr-review/SKILL.md` is **not bundled**; choose an absolute Markdown entry in Settings if yours differs. Its resources and output must satisfy the [review output contract](docs/review-output.md). A skill that invokes another harness also needs that harness configured. Catalog discovery does not prove account/model access.
-- Docker is optional and only needed for Docker execution. A working Docker installation alone is insufficient: see the pinned runtime/architecture and auth support matrix in [Docker boundaries](docs/docker-boundaries.md) before consenting to app-managed setup. OAuth credential storage currently requires macOS Keychain. Linux/headless operation is not supported merely because parts of the tests work there.
+Use macOS, Node.js 24 or newer, npm and Git. CI uses Node 24. The app uses Node's built-in SQLite, so you do not need a database service.
+
+For real repository use, install the official [GitHub CLI](https://cli.github.com/) and authenticate it with access to your repository. Check access with `gh auth status`. The app invokes `gh`, not an agent-specific wrapper.
+
+For AI work, install and authenticate your selected [Claude Code](https://code.claude.com/docs/en/setup), [Codex](https://github.com/openai/codex) or [Pi](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent) CLI through its supported native setup. If your skill invokes another harness, configure that harness too. Model catalog discovery does not prove account or model access.
+
+Install a trusted review skill yourself. The default entry, `~/.claude/skills/pr-review/SKILL.md`, is not bundled; choose an absolute Markdown entry in Settings if yours differs. Its resources and output must satisfy the [review output contract](docs/review-output.md).
+
+Docker is optional and needed only for Docker execution. Before consenting to app-managed setup, check the pinned runtime, architecture and authentication support in [Docker boundaries](docs/docker-boundaries.md). A working Docker installation alone is not enough.
+
+OAuth credential storage requires macOS Keychain. Some tests work on other platforms, but that does not make Linux or headless operation supported.
 
 ### Install, build and run
 
-Clone the public repository, then install its locked dependencies:
+Clone the public repository, install its locked dependencies and build the app:
 
 ```sh
 git clone https://github.com/HarrisonBurst/pr-review.git
@@ -27,9 +41,15 @@ npm run build
 npm start
 ```
 
-Open <http://127.0.0.1:4317>. Keep it loopback-only; do not expose it through a reverse proxy or tunnel. Stop the foreground server with Ctrl-C. No login service is installed.
+Open <http://127.0.0.1:4317>. Keep the app loopback-only and do not expose it through a reverse proxy or tunnel. Stop the foreground server with Ctrl-C; these commands install no login service.
 
-On first launch, enter `owner/repository` or import a PR URL. In Settings, leave automation off, deliberately choose an execution mode, harness, model and trusted skill, then follow its Save/consent requirements. Sync/import reads GitHub data; Review/Re-review and Ask AI invoke the configured harness. Edit and Save a draft locally, inspect the exact Preview payload, and only then explicitly confirm a real submission when you intend to publish. AI revisions are proposals, not silent replacements of manual edits.
+On first launch:
+
+1. Enter `owner/repository` or import a PR URL.
+2. In Settings, leave automation off and choose an execution mode, harness, model and trusted skill. Follow that mode's Save and consent requirements.
+3. Sync or import to read GitHub data. Review, Re-review and Ask AI invoke the configured harness.
+4. Edit and Save a draft locally. AI revisions are proposals and never silently replace manual edits.
+5. Inspect the exact Preview payload. Confirm a submission only when you intend to publish it to GitHub.
 
 ### Try the UI without credentials
 
@@ -40,17 +60,25 @@ DEMO_HOME="$(mktemp -d)"
 HOME="$DEMO_HOME" PR_REVIEW_DATA_DIR="$DEMO_HOME/data" PR_REVIEW_PORT=4318 npm start -- --demo
 ```
 
-Open <http://127.0.0.1:4318>. The **Demo mode** label identifies deterministic GitHub fixtures; Sync now populates them. This is not proof of live GitHub or model access. Do not select native sources, connect providers or set up Docker during this tour. Ordinary demo intentionally refuses native review dispatch. For a fully synthetic editable draft/review flow, use the existing labeled web mock instead:
+Open <http://127.0.0.1:4318>. The Demo mode label identifies deterministic GitHub fixtures, which Sync now populates. They do not prove live GitHub or model access.
+
+Do not select native sources, connect providers or set up Docker during this tour. Ordinary demo mode refuses native review dispatch. For a fully synthetic editable draft and review flow, use the labeled web mock:
 
 ```sh
 npm run dev:mock --workspace web -- --host 127.0.0.1 --port 5174 --strictPort
 ```
 
-Open <http://127.0.0.1:5174> for seeded drafts or <http://127.0.0.1:5174/?setup> for empty setup. This mock never uses the backend or real providers; its state resets on reload. Do not use `VITE_MOCK_API=1` for a real build. See [contributing](CONTRIBUTING.md) for checks and fixture boundaries, [security reporting](SECURITY.md), and [publication validation](docs/publication-readiness.md).
+Open <http://127.0.0.1:5174> for seeded drafts or <http://127.0.0.1:5174/?setup> for empty setup. This mock never uses the backend or real providers, and its state resets on reload. Do not use `VITE_MOCK_API=1` for a real build.
+
+See [contributing](CONTRIBUTING.md) for checks and fixture boundaries, [security reporting](SECURITY.md) for reporting concerns and [publication validation](docs/publication-readiness.md) for recorded limits.
 
 ## Requirements and commands
 
-Node 24/npm on macOS, authenticated GitHub CLI for repository operations, and the explicitly selected Claude Code, Codex or Pi harness with supported native authentication. The selected installed review entry defaults to `~/.claude/skills/pr-review/SKILL.md`, but any supported absolute Markdown entry name is valid. Installed skills/config/auth are never rewritten by setup/save. Explicitly selected file symlinks, including Nix-managed entries, retain their logical layout and frozen source identity; Docker additionally supports bounded native/Nix library links and recognized non-executable WOFF2/PNG skill assets with explicit exact-byte encoding, while arbitrary external resource targets and other binary formats remain fail-closed ([supported source scope](docs/trusted-sources.md)). Dangerous native tools retain their own side effects, including native auth behavior.
+Setup and Save never rewrite installed skills, configuration or authentication stores. Dangerous native tools retain their own side effects, including native authentication behavior.
+
+Explicitly selected file symlinks, including Nix-managed entries, retain their logical layout and frozen source identity. Docker also supports bounded native and Nix library links and recognized non-executable WOFF2 and PNG skill assets with exact-byte encoding. Arbitrary external resource targets and other binary formats remain refused; see [supported source scope](docs/trusted-sources.md).
+
+Run these commands from the repository root:
 
 ```sh
 npm ci
@@ -63,115 +91,358 @@ npm run format
 npm run format:check
 ```
 
-Root checks include the `web` workspace. Vite normally uses `127.0.0.1:5173` and proxies `/api`. Backend-focused fixtures: `node --import tsx --test server/test/*.test.ts`. Formatting of shared contracts/canonical docs can be checked explicitly with Prettier. No separate lint script exists.
+Root checks include the `web` workspace. Vite normally uses `127.0.0.1:5173` and proxies `/api` to the backend. For backend-only fixtures, run `node --import tsx --test server/test/*.test.ts`.
+
+You can check shared contracts and canonical docs explicitly with the installed Prettier. There is no separate lint script. Follow the check order in [Contributing](CONTRIBUTING.md#local-workflow).
 
 ## Configuration and storage
 
-- `PR_REVIEW_HOST`: loopback only, default `127.0.0.1`.
-- `PR_REVIEW_PORT`: default `4317`.
-- `PR_REVIEW_REPOSITORY`: optional `owner/name`.
-- `PR_REVIEW_POLL_INTERVAL`: default 300 seconds.
-- `PR_REVIEW_SKILL_PATH`: initial unsaved review entry default.
-- `PR_REVIEW_MODEL`: initial unsaved Main model, normally null for native-default resolution on Save.
-- `PR_REVIEW_ADDITIONAL_INSTRUCTIONS`: additional trusted reviewer instructions.
-- `PR_REVIEW_DATA_DIR`, `PR_REVIEW_DB_PATH`: optional data overrides.
-- `PR_REVIEW_DEMO=1`: explicit deterministic fixture mode, never a live-error fallback.
+Export environment variables in your shell; the app does not load a `.env` file. Settings defaults initialize new settings and do not overwrite saved choices. General Settings saves never choose an execution mode or grant tools.
 
-`PR_REVIEW_HARNESS_CONFIG` and `PR_REVIEW_WORKFLOW_CONFIG` are retired and do not select/import anything. Normal data is `~/Library/Application Support/pr-review/pr-review.sqlite`; demo defaults to the separate `pr-review-demo` directory. Captured trusted skill/resource bytes are stored; app-owned OAuth credentials use macOS Keychain rather than SQLite. Treat the data directory as private: it includes repository content, drafts, execution captures and diagnostic evidence, and a selected source can itself contain sensitive text. Back up the whole directory only with the app stopped; restoring SQLite does not restore Keychain authorization. Defaults from environment variables initialize new settings, not overwrite saved choices. `XDG_DATA_HOME`, when set, changes the default data root; an explicit `PR_REVIEW_DB_PATH` changes only the database location. Environment variables must be exported by your shell; the app does not load a `.env` file. General Settings saves never choose execution or grant tools.
+| Variable                            | Purpose or default                                                               |
+| ----------------------------------- | -------------------------------------------------------------------------------- |
+| `PR_REVIEW_HOST`                    | Loopback only, default `127.0.0.1`.                                              |
+| `PR_REVIEW_PORT`                    | Default `4317`.                                                                  |
+| `PR_REVIEW_REPOSITORY`              | Optional `owner/name`.                                                           |
+| `PR_REVIEW_POLL_INTERVAL`           | Default 300 seconds.                                                             |
+| `PR_REVIEW_SKILL_PATH`              | Initial unsaved review entry.                                                    |
+| `PR_REVIEW_MODEL`                   | Initial unsaved Main model, normally null for native-default resolution on Save. |
+| `PR_REVIEW_ADDITIONAL_INSTRUCTIONS` | Additional trusted reviewer instructions.                                        |
+| `PR_REVIEW_DATA_DIR`                | Overrides the data directory.                                                    |
+| `PR_REVIEW_DB_PATH`                 | Overrides only the database location.                                            |
+| `PR_REVIEW_DEMO=1`                  | Selects deterministic fixtures, never a fallback after a live error.             |
+
+`PR_REVIEW_HARNESS_CONFIG` and `PR_REVIEW_WORKFLOW_CONFIG` are retired and select or import nothing. `XDG_DATA_HOME`, when set, changes the default data root.
+
+The normal database is `~/Library/Application Support/pr-review/pr-review.sqlite`. Demo mode defaults to the separate `pr-review-demo` directory. Captured trusted skill and resource bytes are stored with app data; app-owned OAuth credentials use macOS Keychain rather than SQLite.
+
+Treat the data directory as private. It contains repository content, drafts, execution captures and diagnostic evidence, and selected sources may contain sensitive text. Back up the whole directory only while the app is stopped; restoring SQLite does not restore Keychain authorization.
 
 ## Supported execution and Settings
 
-Fresh unsaved Settings targets **Dangerous**, Claude Code, the configured model (normally Native default) and skill path. The selector's visible and keyboard order is **Dangerous, Isolated Harnesses, Docker**. This is intent only: it is unavailable until explicit Save with fresh exact host-risk confirmation captures supported configuration. Startup/GET never captures files, grants tools or executes anything. Explicit saved choices remain unchanged; unknown or archived state stays unavailable, never becomes Dangerous intent. Isolated/Docker failures never fall back to Dangerous.
+Fresh unsaved Settings targets Dangerous, Claude Code, the configured model and the configured skill path. The model normally starts as Native default. The selector's visible and keyboard order is Dangerous, Isolated Harnesses, Docker.
 
-- **Isolated harnesses** (`version:3,workflow:"separated"`): one Main harness+model and 0-8 ordered Additional harness+model entries. All three harnesses can fill any role, including multiple models on one harness. The app runs Additional reviewers then Main full review, verification and synthesis into **one editable draft**, without hidden reviewers. Save freezes the review entry/resources, bounded trusted native library, native preferences/instructions/effort and each entry's `restricted-native-1` policy. Executable inherited plugins/hooks/extensions are deliberately disabled. Reviewers get disposable model-auth homes and minimum own-harness environment/auth, with business credentials kept connection-side. Approved gateway tools enforce captured source/profile/schema/tool/destination permissions. Slack uses provider access controls rather than app-enforced channel isolation; existing document/provider resource scopes are unchanged. This is restricted native-tool access, **not OS/process containment** or universal native compatibility.
-- **Docker** (`version:2`): selected-skill/native orchestration and native read/search/edit/write/shell tools inside a real container boundary with a disposable writable copy of the PR, immutable pinned source and no host fallback. Selecting Docker shows one readiness card and a **Set up Docker** or **Fix setup** action. Its guided Save/Source choices/Check/Approve/Set up flow explicitly saves the selected harness/model/skill if needed, offers exact bounded source metadata and independent per-alias read choices before Inspect, checks capabilities, reuses only verifiable unchanged prior approvals and asks you to approve the exact disclosure item by item (portable resources, executable hooks/extensions/skill code/shell prefixes as arbitrary container code, temporary container-visible model access tokens readable by all container code, chosen local stdio tools) and separately consent to **Set up Docker** host effects. Setup revalidates the disclosure, installs pinned app-owned runtime/cache artifacts, performs credential-free runtime/policy checks and freezes the approved artifact. It never selects Docker, installs Docker Desktop, reads model credentials, logs in, refreshes auth, contacts models/providers, rewrites native configuration or enables automation. Missing/unsupported setup fails, never falls back to host. Remote business reads keep the shared Connections grants with credentials host-side; supported local stdio is a discovered Node `.mjs` entry with frozen portable files, run only inside the container and never Loaded/Tested on the host. Older Docker captures without the approval marker stay readable but cannot run. Exact support matrix and evidence: [docs/docker-boundaries.md](docs/docker-boundaries.md).
-- **Dangerous** (`version:2`): selected host harness with full native tools/config/auth and fresh exact backend-validated confirmation on every Save. Native tools can write host files and publish outside app preview. App read permissions do not restrict them. App validation/drafts/proposals/progress/cancellation remain, not process containment.
+This initial choice is intent, not permission to run. Explicit Save must capture supported configuration and, for Dangerous, include fresh exact host-risk confirmation. Startup and GET requests never capture files, grant tools or execute anything.
 
-Explicit [model discovery](docs/model-discovery.md) acquires the installed Claude/Codex first-party catalogs using credential-free native metadata in disposable homes, without prompts, threads, turns or user auth/config changes. Pi static declarations/offline catalogs are unchanged. Catalog entries are labeled separately from configured/saved IDs; unsupported providers/mechanisms remain explicit, with no cross-provider fallback. Discovery never verifies account access/readiness. The Execution card's Main, Additional and Docker/Dangerous model fields are searchable selectors over that contract with an explicit Discover/Refresh action, an always-available Native default and a Custom id option unless the value already is listed, and truthful loading, unsupported, source-error, transport-failure and previous-discovery states.
+Explicit saved choices remain unchanged. Unknown or archived state stays unavailable instead of becoming Dangerous intent. Isolated and Docker failures never fall back to Dangerous.
 
-Opening a model selector shows all choices for its harness without clearing the current value; typing then filters by id or label. Adjacent Settings inputs and buttons are 32px high. Execution essentials stay visible, technical detail stays collapsed, and Dangerous risk plus fresh exact confirmation remain explicit.
+Settings groups controls under Repository and cadence, Automation, Execution and Connections. GitHub health appears beside repository settings; execution details include captured capabilities. Technical details stay collapsed, while execution essentials and Dangerous risk confirmation remain visible.
 
-Selected models are real native invocation overrides; null resolves supported native defaults only on Save. Isolated owns reviewer orchestration/model selection; Docker/Dangerous retain skill/native nested orchestration. Missing setup/auth/requirements is actionable inline. Configured and cached setup readiness are not Connected.
+### Isolated Harnesses
 
-In Isolated or Docker Settings, **Connections > Add a provider** offers reviewed providers including Notion without a native MCP file. **Add provider** stores disabled metadata only; use **Connect** for this app's separate authorization and explicitly choose read grants afterward. Claude built-in connectors are not discovered or inherited. Native connections still use explicit discovery (Claude JSON/Codex TOML), profile/resource scope, **Load tools**, separate default-denied enable/per-tool choices, and **Test connection**. No action occurs on GET/SSE. [Discover Connections](docs/known-mcp-profiles.md#discover-connections-and-unchanged-rediscovery) reads only the selected native file, not app-owned profiles or installed-plugin enumeration; unchanged rediscovery preserves credentials and grants, while changed configured OAuth definitions require explicit Disconnect before replacement. Stdio never executes on the Isolated host, even with a checkbox. [Host-owned MCP OAuth](docs/mcp-oauth.md) adds explicit supported metadata/authentication/inventory infrastructure with app-owned macOS Keychain storage, not arbitrary plugin execution or inherited logins. The Connections UI supports app and explicit fixed-loopback callbacks. The [authenticated Slack read adapter](docs/mcp-oauth.md#authenticated-slack-read-adapter) enables separately granted, bounded search/channel/thread tools using provider access controls, with write and unclassified-tool denial at invocation. Independent identity verification and channel isolation are not promised or required. Authentication alone grants nothing. [Host-owned Axiom reads](docs/axiom-reads.md) use the official browser OAuth route and the same guided registration/consent flow, exposing only explicitly granted dataset listing, observed fields and bounded event samples. Axiom sign-in scopes are not provider read-only permissions; its broader host credential stays outside Isolated/Docker. [Host-owned Notion reads](docs/notion-reads.md) add explicitly granted id-only `notion-fetch` through the same guided OAuth/SDK broker, with broader `default` capability disclosure and write/search/agent denial. Notion Test is a local configuration check, not a content read or live connection proof. The Connections inventory/Test wording for the supported profile is implemented ([wording delta](docs/mcp-oauth.md)). Legacy SSE, helpers and arbitrary native plugins remain unsupported. Known profiles are reviewed data, not server trust or permission. Existing audited GitHub/Linear/Notion/document provider manifest imports remain supported, not native MCP parity. Only successful `scope:"live_read"` plus `connected:true` is point-in-time connection evidence; synthetic/local/inventory evidence is disconnected. Source auth/config stores are not rewritten.
+Isolated Harnesses uses `version:3,workflow:"separated"`, with one Main harness and model plus zero to eight ordered Additional entries. Claude Code, Codex and Pi can fill any role, including multiple models on one harness. The app runs Additional reviewers first, then Main performs a full review, verifies findings and synthesizes one editable draft without hidden reviewers.
 
-[Exact Fable contracts and retired APIs](API_CONTRACT.md), [current Isolated limits](docs/isolated-capabilities.md), [known profiles](docs/known-mcp-profiles.md), [Docker boundary/setup exposure](EXECUTION_BOUNDARY.md), and [reproduction/check evidence](docs/execution-modes.md) are canonical. Settings is organized as Repository and cadence (with GitHub health inline), Automation, Execution (Main/Additional, Docker, Dangerous and captured capabilities) and Connections. Historical compatibility, workflow-source authoring, Legacy metadata import and standalone raw Diagnostics/Tool health are gone; useful source, provenance, permission, error and Test information is inline.
+Save freezes the review entry and resources, a bounded trusted native library, supported native preferences, instructions and effort, and each entry's `restricted-native-1` policy. Inherited executable plugins, hooks and extensions are disabled. Reviewers receive disposable model-auth homes and only the environment and authentication their own harness needs.
+
+Business credentials stay with host-side connections. Approved gateway tools enforce captured source, profile, schema, tool and destination permissions. Slack relies on provider access controls rather than app-enforced channel isolation; other documented resource scopes still apply.
+
+Isolated Harnesses restricts native tools but does not provide OS or process containment. It does not promise universal native compatibility. See [Isolated limits](docs/isolated-capabilities.md).
+
+### Docker
+
+Docker uses `version:2` and lets the selected skill and native harness orchestrate the review inside a container. Native read, search, edit, write and shell tools operate on a disposable writable PR copy while the pinned source stays immutable. Docker never falls back to host execution.
+
+Selecting Docker shows a readiness card with Set up Docker or Fix setup when action is needed. The guided flow separates these steps:
+
+1. Save the selected harness, model and skill if needed.
+2. Review bounded source metadata and make independent read choices for each source alias before Inspect.
+3. Inspect capabilities and review the exact disclosure. The app reuses prior approvals only when it can verify that the approved items are unchanged.
+4. Approve each disclosed capability and exposure. This includes portable resources, arbitrary container code in hooks, extensions, skills or shell prefixes, temporary model access tokens readable by all container code, and selected local stdio tools.
+5. Separately consent to the host effects of Set up Docker.
+
+Setup revalidates the disclosure, installs pinned app-owned runtime and cache artifacts, checks runtime policy without credentials and freezes the approved artifact. It does not select Docker, install Docker Desktop or enable automation. It never reads model credentials, logs in, refreshes authentication, contacts models or providers, or rewrites native configuration.
+
+Remote business reads still require Connections grants, with credentials kept on the host. Supported local stdio tools must be discovered Node `.mjs` entries with frozen portable files. They run only inside the container, never through host Load tools or Test connection.
+
+Missing or unsupported setup fails without a host fallback. Older Docker captures without the approval marker remain readable but cannot run. See the [Docker support matrix](docs/docker-boundaries.md) and [execution boundary](EXECUTION_BOUNDARY.md) for setup exposure, runtime pins and enforcement limits.
+
+### Dangerous
+
+Dangerous uses `version:2` and runs the selected host harness with full native tools, configuration and authentication. Every Save requires fresh exact confirmation that the backend validates. Native tools can write host files and publish outside app preview, and app read permissions do not restrict them.
+
+App validation, drafts, revision proposals, progress and cancellation still apply. They do not provide process containment.
+
+### Models and discovery
+
+Selected models override the real native invocation. A null model resolves supported native defaults only on Save. Isolated Harnesses owns reviewer orchestration and model selection; Docker and Dangerous retain the skill's native nested orchestration.
+
+Explicit [model discovery](docs/model-discovery.md) reads installed Claude and Codex first-party catalogs through credential-free native metadata processes in disposable homes. It starts no prompts, threads or turns and changes no user authentication or configuration. Pi uses its existing static declarations and offline catalogs.
+
+Catalog entries are distinct from configured or saved IDs, and discovery never proves account access or readiness. Unsupported providers and mechanisms remain visible without cross-provider fallback. Configured or cached setup readiness does not mean Connected.
+
+Main, Additional and Docker or Dangerous model fields have searchable selectors with explicit Discover or Refresh actions. Native default is always available, and Custom id is available when the value is not already listed. The selectors distinguish loading, unsupported sources, source errors, transport failures and previous discovery results.
+
+Opening a selector shows all choices for its harness without clearing the current value. Typing filters by ID or label. Adjacent Settings inputs and buttons are 32px high, and missing setup, authentication or requirements appear inline.
+
+### Connections and read permissions
+
+Connections appears when Isolated or Docker is selected. Add a provider offers reviewed providers, including Notion, without requiring a native MCP file. Add provider stores disabled metadata only; Connect handles this app's separate authorization, and read grants require explicit choices afterward.
+
+Native connections use explicit discovery of Claude JSON or Codex TOML, a reviewed profile and resource scope, Load tools, separate enable and per-tool choices, and Test connection. Grants start denied. Claude built-in connectors and their logins are not discovered or inherited.
+
+[Discover Connections](docs/known-mcp-profiles.md#discover-connections-and-unchanged-rediscovery) reads only the selected native file, not app-owned profiles or an installed-plugin inventory. Unchanged rediscovery preserves credentials and grants. Replacing a changed OAuth definition with configured credentials requires explicit Disconnect first.
+
+[Host-owned MCP OAuth](docs/mcp-oauth.md) supports reviewed metadata, authentication and inventory through app-owned macOS Keychain storage. The UI supports app callbacks and explicitly selected fixed-loopback callbacks. This does not enable arbitrary plugins or inherit native logins, and source authentication and configuration stores remain unchanged.
+
+Authentication alone grants no reviewer tools. An OAuth card's Connected label means the app admitted its authentication, not that a read succeeded. Only `scope:"live_read"` with `connected:true` proves a successful read at the recorded time; synthetic, local and inventory checks do not.
+
+Supported provider reads have distinct limits:
+
+- [Slack](docs/mcp-oauth.md#authenticated-slack-read-adapter) offers separately granted, bounded search, channel and thread reads under Slack's access controls. Writes and unclassified tools are denied at invocation. The app neither promises nor requires independent identity verification or channel isolation.
+- [Axiom](docs/axiom-reads.md) uses official browser OAuth and the guided registration and consent flow. Grants cover dataset listing, observed fields and bounded event samples. Its sign-in scopes are not provider read-only permissions, and its broader host credential stays outside Isolated and Docker.
+- [Notion](docs/notion-reads.md) offers only explicitly granted, ID-only `notion-fetch` through the OAuth broker. Consent discloses its broader `default` capability, while the app denies writes, search and agent tools. Notion Test checks local configuration, not content or live connectivity.
+
+GET requests and server-sent events initiate no connection actions. Stdio never runs on the Isolated host, even when a checkbox is selected. Legacy SSE, executable helpers and arbitrary native plugins remain unsupported.
+
+Known profiles describe reviewed protocols, not server trust or permission. Audited GitHub, Linear, Notion and document-provider manifest imports remain supported, without a claim of native MCP parity. See [known profiles](docs/known-mcp-profiles.md) and the [API contract](API_CONTRACT.md) for exact contracts and Test behavior.
+
+Historical compatibility options, workflow-source authoring, Legacy metadata import and standalone raw Diagnostics or Tool health panels are retired. Relevant source, provenance, permission, error and Test information appears with its controls.
 
 ## Troubleshooting
 
-- **Node/SQLite or dependency errors:** use Node 24+, run `npm ci` from the repository root, then `npm run build`. `npm start` needs that build; use `npm run dev` for backend plus Vite development.
-- **Port already in use:** stop your own prior instance or choose another `PR_REVIEW_PORT` for the built app. Vite's development proxy targets port 4317; changing only the backend port does not update that proxy. Never bind to a public interface.
-- **GitHub unavailable:** run `gh auth status` in the same launch environment and verify repository access. Empty inbox does not mean every open PR will be imported: use an explicit PR URL for other tracked PRs. Sync does not run reviews while automation is disabled.
-- **Execution unavailable:** install/authenticate the selected harness yourself, verify the selected absolute skill path, then explicitly Save. Archived captures need a new save, not a database reset. Dangerous requires fresh confirmation on every save. Isolated disables inherited executable hooks/plugins/extensions; unsupported native behavior is not a reason for automatic host fallback.
-- **Docker not ready:** read the readiness card and support matrix, explicitly inspect/approve exact sources and capabilities, then separately consent to setup host effects. Source or runtime drift needs revalidation. Do not delete captures or weaken guards to bypass a refusal.
-- **Connections not usable:** native discovery reads the selected supported config, not Claude built-in connectors or existing app logins. Add provider starts disabled. Connect, Load tools and explicit per-tool grants are separate. Notion currently supports id-only `notion-fetch`, not search/write/agent tools; its Test is a local check, not live-read proof. Provider schema, client eligibility and supported auth setup may still prevent use. See [Notion](docs/notion-reads.md) and [OAuth](docs/mcp-oauth.md).
-- **Tests fail or work was interrupted:** keep the failure, command and revision; report a minimal synthetic reproduction. Never attach your database, credentials, native profiles or raw diagnostics. See [known preparation check results](docs/publication-readiness.md). Live integrations and opt-in container/Keychain tests are separate evidence, not implied by unit tests.
+### Node, SQLite or dependency errors
+
+Use Node 24 or newer, run `npm ci` from the root and then run `npm run build`. `npm start` requires that build. Use `npm run dev` for backend and Vite development together.
+
+### Port already in use
+
+Stop your own prior instance or choose another `PR_REVIEW_PORT` for the built app. Vite's development proxy targets port 4317, so changing only the backend port does not update the proxy. Never bind to a public interface.
+
+### GitHub unavailable or inbox empty
+
+Run `gh auth status` in the same environment that launches the app and verify repository access. The app does not import every open PR; import other PRs explicitly by URL. Sync does not run reviews while automation is disabled.
+
+### Execution unavailable
+
+Install and authenticate the selected harness, verify the absolute skill path and explicitly Save. Archived captures require a new save, not a database reset. Dangerous requires fresh confirmation every time.
+
+Isolated Harnesses disables inherited executable hooks, plugins and extensions. Unsupported native behavior does not permit automatic host fallback.
+
+### Docker not ready
+
+Read the readiness card and support matrix, inspect and approve exact sources and capabilities, then separately consent to setup host effects. Source or runtime drift requires revalidation. Do not delete captures or weaken guards to bypass a refusal.
+
+### Connections not usable
+
+Discovery reads the selected supported native configuration, not Claude built-in connectors or existing logins. Add provider starts disabled; Connect, Load tools and explicit per-tool grants are separate steps. Provider schemas, client eligibility and supported authentication may still prevent use.
+
+Notion supports ID-only `notion-fetch`, not search, write or agent tools. Its Test is a local check, not live-read proof. See [Notion](docs/notion-reads.md) and [OAuth](docs/mcp-oauth.md).
+
+### Tests fail or work is interrupted
+
+Keep the failure, command and revision, and report a minimal synthetic reproduction. Never attach your database, credentials, native profiles or raw diagnostics. See [recorded preparation results](docs/publication-readiness.md); live integrations and opt-in container or Keychain tests are separate from unit-test evidence.
 
 ## Saved history and upgrade consequences
 
-No destructive reset or conversion. Saved choices, reviews/results/progress, edited drafts, proposals, submissions, questions and evidence stay stored/readable. Old fixed Claude/Codex, versionless, v2 single-primary Isolated, v3 without required capability policies, v1/imported execution-only Docker and host-only Dangerous captures cannot run. Settings exposes a re-save action instead of an executable historical option. Re-saving affects new reviews/revisions/independent questions, never old captures. Unsupported question retries/follow-ups fail before altering the answer/status; start an independent question after saving current Settings. Supported queued jobs and threads keep immutable captured roles/models/permissions and startup interruption/dedup behavior.
+Upgrades do not reset or convert historical execution captures. Saved choices, reviews, results, progress, edited drafts, proposals, submissions, questions and evidence remain readable. Settings offers re-save instead of an executable historical option.
+
+Unsupported captures include fixed Claude/Codex execution, versionless execution, v2 single-primary Isolated, and v3 Isolated without required capability policies. Version 1 or imported execution-only Docker and host-only Dangerous captures also cannot run. See the [archive contract](API_CONTRACT.md#archive-and-upgrade-consequences) for exact shapes.
+
+Re-saving affects new reviews, revisions and independent questions, never old captures. Unsupported question retries and follow-ups fail before changing the answer or status; save current Settings and start an independent question instead. Supported queued jobs and threads retain their captured roles, models and permissions, with the existing restart interruption and deduplication rules.
 
 ## Review output and progress
 
-[Output contract 1.0](docs/review-output.md) and `npm run check:review-output < candidate.json` use the same validator as final ingestion. Current native adapters expose the read-only `check_review_output` tool. Format success grants no correctness or publishing authority. Custom overview Markdown and existing optional anchor defaults are preserved.
+[Output contract 1.0](docs/review-output.md) and `npm run check:review-output < candidate.json` use the same validator as final ingestion. Current native adapters expose the read-only `check_review_output` tool. Passing the format check proves neither correctness nor permission to publish.
 
-Current execution records checkout, `workflow` and finalize, plus actual captured per-entry Isolated evidence. Each result requires a complete authoritative native stream and canonical valid output; malformed/truncated/oversized results never count as success. Additional failures are disclosed to Main and in private rationale; Main failure creates no draft. Historical `claude`/`codex` phases remain display-only. Progress labels exclude prompts, reasoning, raw command arguments, credentials and tool output. Bounded activity and actual timestamps persist across reload/restart; no completion estimate is invented.
+Custom overview Markdown and optional anchor defaults remain supported. Each result requires a complete authoritative native stream and valid canonical output. Malformed, truncated or oversized results never count as success.
+
+Execution records checkout, `workflow` and finalize phases, plus the captured per-entry Isolated evidence. Main receives Additional failures, which also appear in private rationale; Main failure creates no draft. Historical `claude` and `codex` phases remain display-only.
+
+Progress labels exclude prompts, reasoning, raw command arguments, credentials and tool output. Bounded activity and actual timestamps persist across reloads and restarts. The app does not invent completion estimates.
 
 ## Safe fixtures and operational limits
 
-Use an explicitly labeled demo/mock server with separate loopback port, disposable HOME and database. Ordinary demo refuses native Isolated/Dangerous dispatch without code-injected inert fixtures, rather than substituting a one-review result for configured roles. The labeled web mock (`VITE_MOCK_API=1`) covers every Settings state through URL parameters documented in [API_CONTRACT.md](API_CONTRACT.md#web-implementation-on-these-contracts). No real GitHub submissions are permitted for tests.
+Use a labeled demo or mock server on its own loopback port, with disposable HOME and data. Ordinary demo mode refuses native Isolated and Dangerous dispatch unless code-injected inert fixtures replace it. It does not substitute a single-review fixture for configured roles.
 
-PR content is untrusted. App checkout preparation pins exact base/head and disables Git hooks/templates/global config; native harnesses start outside the PR checkout and do not inherit PR agent configuration. Isolated allows only bounded source/library reads, canonical checker and captured audited gateway tools. Docker adds separate OS/container enforcement for explicitly approved container code; the PR's own agent configuration is excluded from the container workcopy. Dangerous intentionally removes app native-tool restrictions. App publishing always requires a fresh exact preview and explicit confirmation; uncertain writes are reconciled, never automatically retried. Cancellation is process ownership, not containment of malicious detached host descendants.
+The labeled web mock uses `VITE_MOCK_API=1` and covers Settings states through [documented URL parameters](API_CONTRACT.md#web-implementation-on-these-contracts). Never submit a real GitHub review for a test.
 
-Optional launchd installation is never automatic. Keep any installed service loopback-only. The newcomer setup does not install a login service, configure credentials, enable polling or publish reviews.
+PR content is untrusted. App checkout preparation pins the exact base and head and disables Git hooks, templates and global configuration. Native harnesses start outside the PR checkout and do not inherit PR agent configuration.
+
+Isolated Harnesses permits only bounded source and library reads, the canonical checker and captured audited gateway tools. Docker adds OS and container enforcement for explicitly approved code and excludes PR agent configuration from its writable copy. Dangerous removes the app's native-tool restrictions.
+
+App publishing always requires a fresh exact preview and explicit confirmation. The app reconciles uncertain writes instead of retrying automatically. Cancellation tracks process ownership but cannot contain malicious detached host descendants.
+
+Optional launchd installation is never automatic, and any installed service must remain loopback-only. The newcomer setup installs no login service, configures no credentials, enables no polling and publishes no reviews.
 
 ## Automation controls
 
-Settings holds four independent global defaults, grouped as two pairs:
+Settings has four independent global defaults, grouped into polling and auto-review pairs:
 
-- **Poll for new commits** refreshes every tracked open pull request on the poll interval and keeps the stale indicator and new-commit list current without a detail page being open.
-- **Auto-review new commits** queues a review with the `new_commits` trigger when a polled head commit changes. Title or description edits never count. It only takes effect while its polling switch is on.
-- **Poll for review requests** lists the repository's open pull requests as a compact projection, records review requests addressed to you directly or to a team you currently belong to, including re-requests on the same commit, and refreshes every tracked pull request so closed ones and removed requests leave the inbox. Only matching and already tracked pull requests are fetched in full; unrelated open pull requests are never imported or diffed.
-- **Auto-review requests** queues a review for each newly observed request event. It only takes effect while its polling switch is on.
+- Poll for new commits refreshes every tracked open PR on the poll interval. It keeps stale indicators and new-commit lists current without an open detail page.
+- Auto-review new commits queues a `new_commits` review when a polled head changes. Title and description edits do not count, and this policy acts only while commit polling is on.
+- Poll for review requests lists the repository's open PRs and records requests addressed to you or your current teams, including same-commit re-requests. It refreshes tracked PRs so closed PRs and removed requests leave the inbox. Only matching or already tracked PRs are fetched in full; unrelated open PRs are never imported or diffed.
+- Auto-review requests queues a review for each newly observed request event. It acts only while request polling is on.
 
-Polling is global only. A pull request page shows each polling switch read-only with a link to Settings, and offers Inherit / On / Off overrides for the two auto-review switches, with the effective result beside each one: `Inherit (global Off)` is a selected Inherit that resolves to off, `Off (this PR)` is an explicit override, and an auto-review that is on but whose global polling switch is off is labeled inactive. A pull request cannot opt into polling while the global switch is off, and turning on an auto-review switch never turns on polling. An explicit Off wins over a global On. Databases from the earlier per-PR polling model drop their stored `pollCommits` and `pollRequests` overrides on startup; the auto-review overrides are kept, but they only act once the matching global polling switch is on, and no global switch is ever turned on by the migration.
+### Per-PR overrides
 
-Automation starts from an observed baseline: the first poll after a policy is enabled records the current head and outstanding request events without queueing anything, and only later head changes and request events are reviewed. Re-review is the explicit catch-up action. Baselines, request event IDs, and jobs are persisted, so a restart does not review the same head or event twice. A new-head trigger and a request trigger for the same commit share one pending run, while a later same-SHA re-request after a completed run queues again. Turning a policy off stops future automatic jobs but does not cancel in-flight work or touch drafts. Closed pull requests, refresh failures, and rate limits queue nothing. Pre-existing databases keep their old `pollingEnabled` intent within its old scope: an enabled legacy setting becomes request polling plus request auto-review, and commit automation stays off.
+Polling is global only. Each PR page shows polling switches read-only with a link to Settings and offers Inherit, On and Off overrides for the two auto-review policies. A PR cannot opt into polling while its global switch is off, and enabling auto-review never enables polling.
+
+The effective result appears beside each override. `Inherit (global Off)` means Inherit resolves to off, while `Off (this PR)` is an explicit override that wins over global On. Auto-review that is on while its polling switch is off appears inactive.
+
+Older databases discard per-PR `pollCommits` and `pollRequests` overrides at startup but retain auto-review overrides. Those overrides act only after the matching global polling switch is on. The migration never enables a global switch.
+
+### Baselines and duplicate work
+
+The first poll after enabling a policy records the current head and outstanding requests without queueing reviews. Only later changes and request events trigger automatic work. Use Re-review for explicit catch-up.
+
+Baselines, request IDs and jobs persist, so restart does not review the same head or event twice. A new-head trigger and a request trigger for the same commit share one pending run. A later same-SHA re-request after a completed run queues a new review.
+
+Turning off a policy stops future automatic jobs without cancelling active work or touching drafts. Closed PRs, refresh failures and rate limits queue nothing.
+
+Older databases retain the scope of their `pollingEnabled` setting. An enabled legacy setting becomes request polling plus request auto-review, while commit automation stays off.
 
 ## Review concurrency
 
-Settings holds one global **Maximum concurrent reviews** value, an integer from 1 to 8 that defaults to 1 (databases from before it existed start at 1, so nothing runs in parallel until you raise it). It caps how many full reviews and AI revisions the review queue runs at the same time; each running job has its own pinned checkout, immutable snapshot, result, log, progress tracker, and cancellation, and each opens its captured harness context, so higher values use more local CPU, memory, and simultaneous model sessions. Jobs for the same pull request always run one after another, so its status, draft, and proposal projections never race, while the oldest eligible jobs for other pull requests use free slots instead of waiting behind it. Same-head pending-review deduplication and FIFO order among eligible jobs are unchanged. The value applies when saved: raising it starts already queued eligible jobs right away, and lowering it never cancels a running job and starts nothing new until fewer jobs than the new cap are running. Changing it queues no review, changes no polling or auto-review policy, and never approves or posts anything. Ask AI questions keep their own single-slot lane and are not counted. A backend shutdown interrupts every active job and marks each one interrupted; nothing is rerun automatically on restart.
+Maximum concurrent reviews is a global integer from 1 to 8, defaulting to 1. Older databases also start at 1. It caps full reviews and AI revisions, not Ask AI questions, which have their own single-slot queue.
+
+Each running job has a pinned checkout, immutable snapshot, result, log, progress tracker and cancellation control. It opens its captured harness context, so higher concurrency uses more CPU, memory and simultaneous model sessions. Jobs for the same PR always run sequentially to avoid conflicting status, draft and proposal updates.
+
+The oldest eligible jobs for other PRs use free slots instead of waiting behind a busy PR. Same-head pending-review deduplication and first-in, first-out ordering among eligible jobs remain unchanged.
+
+Saving a higher limit starts eligible queued jobs immediately. Lowering it never cancels active jobs and starts no new work until the running count falls below the new limit. Changing the limit queues no reviews, changes no automation policy and approves or posts nothing.
+
+Backend shutdown interrupts every active job and marks it interrupted. Restart reruns none of them automatically.
 
 ## Inbox groups and ordering
 
-The inbox lists only open pull requests that currently request a review from you or one of your teams, or that you imported by URL, each once in three collapsible groups: **Requested of you** (a review is requested of you directly, or of you and one of your teams), **Requested of your teams** (requested only of a team you currently belong to in the repository's organization), and **Other tracked PRs** (imported pull requests with no current request, plus legacy requested rows whose request type is not recorded yet). Closed and merged pull requests and pull requests whose request was removed without an import leave the inbox and stop being polled, but their runs, drafts, questions, and submissions stay readable at their pull request URL and are never deleted. The first two groups start expanded and the third collapsed; your own expand and collapse choices are kept for the browser session, across live updates and navigation. Group headers are keyboard-operable and show the number of pull requests in the group, or `shown of total` while a search or status filter narrows the list. Search and status filters apply to every group, including a collapsed one.
+The inbox contains open PRs that request your review, request a review from one of your teams or were imported by URL. Each appears once in one of three collapsible groups:
 
-Each row ends with a Review button (Re-review once a completed review exists) that runs the same manual review as the pull request page: it syncs the pull request to its latest commit, queues one review under the configured concurrency and per-PR deduplication, and never approves or posts anything. The button shows Syncing while that refresh is in flight and Queued or Reviewing from the row's status afterwards, each row independently; a refresh failure, a closed pull request, or a queue failure is reported in a toast, even when the row leaves the inbox. The row omits the idle button when `hasReviewedHead` reports a completed full review of the exact current commit, because re-running it from the inbox would review the same code again; a same-head re-review stays on the pull request page, where additional instructions can be given. Only exact-head run history decides this, not the Ready, Submitted, or Failed status, `lastReviewedAt`, local drafts, or AI revisions, so the button returns as soon as a new commit arrives. The row title is the link to the pull request, so a click anywhere else on the row opens it and modifier clicks open it in a new tab, while the button only starts local review work.
+- Requested of you includes direct requests, including requests addressed to both you and a team.
+- Requested of your teams includes team-only requests for teams you currently belong to in the repository's organization.
+- Other tracked PRs includes imported PRs without a current request and legacy requested rows whose request type is not yet known.
 
-Inside each group, pull requests whose latest draft is Ready come first, then every other active status, and settled submissions last, each band from oldest to newest. A pull request is settled only while its status is Submitted, and the backend gives and keeps that status only while a confirmed successful submission is the newest evidence for the latest draft: its preview names the latest draft id and save version and its payload targets the current head, no later submission attempt is in flight, uncertain, or failed, and no review request event was recorded with a time later than it (a fresh request or a same-commit re-request re-derives the status from the latest draft, at the next sync or at startup for databases written before this rule). Submitting an intentionally selected older same-commit draft is still allowed, but it never settles the newer draft, which stays Ready in active order; a new commit turns the pull request Outdated and a saved edit, accepted revision, or new review draft turns it Ready. A successful submit or a reconciled uncertain write that no longer matches the latest draft, version, or head keeps the current status, and one that lands while a review is queued or running keeps that state instead of showing Submitted. A failed or uncertain submission never sets Submitted, so it stays in active order, an older request event that is only observed after the submission does not count as newer, and a stored submission whose preview or draft identity is missing is kept as history but is not proof that the latest draft was submitted. The Submitted badge has its own violet tone with a check mark, distinct from Ready and Outdated in light and dark mode, and the label text carries the meaning. Age is the latest review request time in the two requested groups and the pull request's creation time in Other tracked PRs (or when no request time is known); each row says which one it shows, such as `requested 2h ago` or `opened 3d ago`. Unknown dates sort last, and equal dates fall back to the pull request number.
+Closed and merged PRs leave the inbox and stop being polled. PRs with removed requests do too unless imported by URL. Their runs, drafts, questions and submissions remain readable at their PR URLs and are never deleted.
 
-Request provenance (`direct`, `team`, or `both`) is recorded from GitHub's requested reviewers and your team membership on every request sync, cleared when the request disappears or the pull request closes, and kept as-is by commit-only polls, freshness checks, and other refreshes that do not read requests. Databases from before this model gain the `request_source` and `created_at` columns on startup with no values filled in: a row that was already marked requested is shown in Other tracked PRs with a `requested, type unknown` hint until the next ordinary request sync records its provenance, and its creation time is filled by the next refresh of that pull request. Nothing is guessed from the author or title.
+The first two groups start expanded and the third collapsed. Your choices persist for the browser session through navigation and live updates. Group headers support keyboard controls and show counts, or `shown of total` while filters apply.
 
-Import provenance is explicit. Importing a pull request by URL marks it `imported`, even when it is already tracked or currently requested, and that mark survives refreshes, polls, and later request removal; only open pull requests can be imported, and a closed or merged one is refused with a clear error while any history it already has is kept. Running a review, opening a page, or having a draft never counts as an import. Databases from before this mark existed gain the `imported` column with every row unmarked, because older versions recorded no import provenance and the broad poll they ran imported unrelated pull requests: rows that are not currently requested therefore disappear from the inbox and from polling on upgrade, keep their full history at their pull request URL, and can be tracked again idempotently by importing the same URL. The migration queues no review and changes no draft.
+Search and status filters apply to every group, including collapsed ones.
+
+### Row actions
+
+Each row offers Review, or Re-review after a completed review, unless the current commit already has a completed full review. The action syncs the latest commit and queues one manual review under the normal concurrency and per-PR deduplication rules. It never approves or posts anything.
+
+Each button independently shows Syncing during refresh, then Queued or Reviewing from the row's status. Refresh, closed-PR and queue failures appear in a toast even if the row leaves the inbox.
+
+The idle button disappears when `hasReviewedHead` records a completed full review of the exact current commit. A same-head re-review remains available on the PR page, where you can add instructions. Only exact-head full-review history decides this, not status, `lastReviewedAt`, drafts or AI revisions, so a new commit restores the button.
+
+The row title links to the PR page, and clicking elsewhere on the row opens it too. Modifier clicks open it in a new tab. The review button only starts local review work.
+
+### Ordering and settled submissions
+
+Within each group, Ready drafts come first, then other active statuses, then settled submissions. Each band runs from oldest to newest. A settled PR has Submitted status only while a confirmed successful submission remains the newest evidence for its latest draft.
+
+To remain settled, the submission must meet all of these conditions:
+
+- Its preview names the latest draft ID and save version, and its payload targets the current head.
+- No later submission attempt is in flight, uncertain or failed.
+- No review request event has a timestamp later than the submission.
+
+A fresh request or same-commit re-request restores status from the latest draft at the next sync. Startup also applies this rule to older databases. An older request discovered after submission does not count as newer.
+
+You may submit an intentionally selected older draft for the same commit, but that never settles the newer draft, which stays Ready. A new commit makes the PR Outdated. A saved edit, accepted revision or new review draft makes it Ready.
+
+A successful submission or reconciled uncertain write that no longer matches the latest draft, version or head keeps the current status. If it lands while a review is queued or running, that review state remains instead of Submitted. Failed and uncertain submissions never set Submitted.
+
+A stored submission without preview or draft identity stays in history but does not prove that the latest draft was submitted. The Submitted badge has a violet tone and check mark, distinct from Ready and Outdated in both themes. Its label carries the meaning without relying on color.
+
+Age means latest request time in the requested groups and PR creation time in Other tracked PRs or when request time is unknown. Rows identify the source with labels such as `requested 2h ago` or `opened 3d ago`. Unknown dates sort last; equal dates use the PR number.
+
+### Request and import history
+
+Request provenance is `direct`, `team` or `both`, read from GitHub's requested reviewers and your team membership on each request sync. It clears when the request disappears or the PR closes. Commit-only polls, freshness checks and other refreshes that do not read requests leave it unchanged.
+
+Older databases gain empty `request_source` and `created_at` columns. Previously requested rows appear under Other tracked PRs with `requested, type unknown` until a request sync records their provenance. The next PR refresh fills creation time; nothing is inferred from the author or title.
+
+Importing an open PR by URL marks it `imported`, even if already tracked or requested. That mark survives refreshes, polls and request removal. Closed or merged imports fail with a clear error while preserving existing history.
+
+Running a review, opening a page or having a draft never counts as an import. Older databases add `imported` with every row unmarked because previous versions recorded no import provenance and could import unrelated PRs through broad polling.
+
+On upgrade, those unrequested rows leave the inbox and polling but retain their full history at their PR URLs. Import the same URL to track an open PR again without creating a duplicate. The migration queues no review and changes no draft.
 
 ## Merge readiness
 
-Each inbox row carries a `Merge:` hint and the Status card a `Merge` row with GitHub's own merge readiness for the exact head shown: **Ready to merge** only when GitHub reports the pull request clean for that commit, **Mergeable, checks not passing** when GitHub allows the merge while non-required checks fail or wait, **Blocked** with every reason GitHub exposes (draft, merge conflicts, branch behind the base, changes requested, review required, failed or pending required checks, plus non-required checks marked `(not required)`, or a generic branch-protection blocker when GitHub exposes no cause), **In merge queue**, or **Unknown** while GitHub is still computing mergeability or the lookup failed. Reasons link to the check or the pull request. It is separate from the local draft status (Unreviewed, Ready, Outdated) and does not change grouping, ordering, or filters; it describes what GitHub reports, not whether you are allowed to merge, and nothing here merges, approves, or reviews.
+Each inbox row has a `Merge:` hint, and the Status card has a Merge row. These show GitHub's report for the exact displayed head, not permission to merge. They do not change local draft status, grouping, ordering or filters, and never merge, approve or review anything.
 
-Readiness is fetched with one read-only GraphQL query on the same refreshes that already fetch the pull request (Sync now, scheduled polls, import, the check when a page opens, and the refresh before a review or preview), never on a timer of its own or on plain page loads, and it is stored with the head commit and time it was checked. A snapshot for an older head is shown as `Stale, was ...` until the next check. A failed lookup for the same head is recorded as **Unknown** with the failure and its time; the previous result for that head is kept only as an explicitly labeled `Last known: ...` line with the time it was actually observed, never as a current green state, and the next successful check replaces it. An answer GitHub gives for a newer head, a closed or merged pull request, a latest commit other than the head, GraphQL errors beside partial data, a truncated check list under a `CLEAN` status, or a `CLEAN`/`UNSTABLE` status alongside a draft flag, conflicts, or a failing or pending required check is recorded as unknown with the reason rather than green; ready requires coherent, complete evidence for the exact head. A lookup failure never blocks the rest of a sync. Databases from before this feature gain an empty `merge_readiness` table and show `Not checked yet` until each pull request is next refreshed; nothing is fetched retroactively.
+The reported states are:
+
+- Ready to merge, only when GitHub reports the exact commit clean.
+- Mergeable, checks not passing, when GitHub allows a merge while non-required checks fail or wait.
+- Blocked, with the reasons GitHub exposes. These may include draft state, conflicts, an outdated branch, changes requested, missing review or required checks, and non-required checks marked `(not required)`. A generic branch-protection reason appears when GitHub supplies no cause.
+- In merge queue.
+- Unknown, while GitHub computes mergeability or after a lookup failure.
+
+Reasons link to the check or PR. Readiness uses one read-only GraphQL query during existing PR refreshes, including Sync now, polling, import, page-open freshness checks and refreshes before review or preview. It has no separate timer, and an ordinary page load without a freshness check does not fetch it.
+
+The app stores the result with its head commit and check time. A snapshot for an older head appears as `Stale, was ...` until the next check. A failed same-head lookup becomes Unknown with its failure and time; any previous result appears only as a timestamped `Last known: ...` line.
+
+The next successful check replaces that failure. Lookup failures never block the rest of a sync. Older databases start with an empty `merge_readiness` table and show Not checked yet until each PR refreshes, without a retroactive fetch.
+
+Ready requires complete, coherent evidence for the exact head. The app records Unknown with a reason for mismatched heads or latest commits, closed or merged PRs, partial GraphQL errors, or truncated check lists under `CLEAN`. It also refuses `CLEAN` or `UNSTABLE` reports that conflict with draft state, merge conflicts or failed or pending required checks.
 
 ## Review drafts
 
-Every successful full review creates its own editable draft, initialized once from that run's immutable result, and a local draft can be created by hand without any review (see below). Opening a pull request shows the draft of the newest successful review run, ordered by run creation, so a failed or in-progress review never hides the latest completed one and edits to an older draft never make it current. Older drafts stay selectable from the draft selector and the Runs card, each labeled with its review number, commit, and save version. Every draft has its own optimistic save version, revision proposals stay bound to the draft and version they were generated from, and previews and submissions name the exact draft. A stale draft cannot be submitted just because a newer draft exists. A review that finishes while you are editing adds a new draft and offers it; it never switches or resets the open editor. Inbox status and counts follow the latest draft. Outdated means only that the latest full-review draft targets a commit other than the current head; a pull request with no draft stays Unreviewed through new commits and closure, and closing, merging, or editing a pull request on its reviewed commit keeps it Ready. Startup re-derives Unreviewed, Ready, and Outdated from the latest draft, so older databases that stored Outdated for closed pull requests without a draft are corrected.
+Every successful full review creates an editable draft once from that run's immutable result. You can also create a local draft by hand without a review. Every draft has its own optimistic save version, and previews and submissions identify the exact draft.
 
-Findings anchor to a side (new or old) and a line or a range within one hunk; databases from before this model gain the new-side single-line defaults on startup and drafts created before local drafts existed keep their review run. A draft separates three things. The overview is a private, code-grounded engineering summary of the change for the reviewer: it is shown read-only in the same readable style as the comment body, is kept as-is by ordinary draft saves, changes only when a review result or an accepted AI revision supplies it, and is never posted. It is stored and rendered as the complete Markdown the skill produces, so a skill overview with several sections (for example ticket intent, what the pull request does, and ticket coverage with fulfilled, partial or missing, and unverified items, including an explicit note when no ticket context was available) keeps every heading and bullet; the app adds no sections of its own and older overviews are left as they were. The GitHub review body is the editable text posted verbatim as the review body, followed by any body-only findings. Finding evidence is private verification support kept from the review result; it is shown read-only in that same style, is preserved on ordinary edits, and is never included in a payload. Reviews completed before overview support have an empty overview; the page says so instead of offering an editor, and a new full review produces one. Databases created before this model migrate on startup: the previous single draft keeps its id, version, findings, and text, its old summary becomes the review body, its overview is empty and shown as absent, and every other completed review run gets a draft from its stored result. The pull request's inbox status, finding counts, and last-reviewed time are then projected from the newest full-review draft, while queued and failed states are kept and a submitted state is kept only when a successful submission record names the latest draft at its current save version and head. A previous draft that had accepted an AI revision points at that revision run; the migration reattaches it to its originating full review when exactly one completed review on the same commit finished before the revision and has no draft of its own, and the accepted proposal keeps the revision lineage. When that lineage is ambiguous the draft stays attached to the revision run, is listed after every full-review draft, and is labeled as a legacy revised draft instead of counting as another review. The migration is idempotent and never regenerates or reruns anything.
+Opening a PR shows the newest successful full review's draft, ordered by run creation. Failed or in-progress reviews do not hide the latest completed draft, and editing an older draft does not make it current. Older drafts remain selectable in the draft selector and Runs card, labeled by review number, commit and save version.
+
+A review that finishes while you edit adds and offers its new draft without switching or resetting your editor. Revision proposals stay bound to their source draft and version. A stale draft cannot be submitted just because a newer draft exists.
+
+### Draft status
+
+Inbox status and counts follow the latest draft. Outdated means that draft targets a different commit from the current head. A PR with no draft stays Unreviewed through new commits and closure; closing, merging or editing PR metadata on the reviewed commit keeps its draft Ready.
+
+Startup derives Unreviewed, Ready and Outdated from the latest draft. This corrects older databases that marked closed PRs without drafts Outdated.
+
+### Overview, body and evidence
+
+A draft separates the private overview, the GitHub review body and private finding evidence. Findings anchor to the new or old side and to one line or a range within a single hunk. Older databases receive new-side, single-line defaults, and drafts predating local drafts retain their review run.
+
+The overview is a private engineering summary grounded in the code. It is read-only, never posted and unchanged by ordinary draft saves. Only a review result or accepted AI revision replaces it.
+
+The app stores and renders the skill's complete overview Markdown without adding sections or rewriting older overviews. A skill can include ticket intent, changes, fulfilled or partial coverage, missing or unverified items, and a note that no ticket context was available. All headings and bullets remain intact.
+
+The GitHub review body is editable and posted verbatim, followed by any body-only findings. Finding evidence is private verification support from the review result, rendered read-only like the overview and body. Ordinary edits preserve it, and no submission payload includes it.
+
+Reviews completed before overview support have an empty overview. The page states that it is absent rather than offering an editor. A new full review produces one.
+
+### Older draft migrations
+
+On startup, the previous single draft retains its ID, version, findings and text. Its summary becomes the review body, with an empty overview. Every other completed review run receives a draft from its stored result.
+
+The newest full-review draft determines inbox status, finding counts and last-reviewed time, while queued and failed states remain. Submitted survives only when a successful submission names that latest draft at its current save version and head.
+
+A previously revised draft may point to its AI revision run. The migration reattaches it to a full review only when exactly one completed review on the same commit finished before the revision and has no draft. The accepted proposal retains revision lineage.
+
+If that lineage is ambiguous, the draft stays attached to the revision run and appears after full-review drafts as a legacy revised draft. It does not count as another full review. The migration is idempotent and never regenerates or reruns reviews.
 
 ## Selecting code, Ask AI, and manual comments
 
-The Diff card shows the pull request's current diff at its current head, not the snapshot of the draft you are editing. Select code there by dragging over the text, or through the line-number gutter: click a number, Shift-click or drag to extend, or focus a number with the keyboard and press Enter, then Shift plus the arrow keys. The selection stays highlighted and an in-flow panel appears under its last row with the file, side and range, and the exact `base..head` commits it was made on. A selection is always one file; selecting across files is refused with an explanation, and a selection can span more than one hunk for reading but not for a comment.
+The Diff card shows the current diff at the PR's current head, not the snapshot behind your open draft. Select text directly or use the line-number gutter. Click a line number, then Shift-click or drag to extend; with the keyboard, focus a number, press Enter and use Shift with the arrow keys.
 
-The panel offers **Explain**, **Investigate**, **Draft comment** and **Add comment**. New Ask AI threads capture the current explicitly saved execution and exact selected base/head/range. Isolated questions invoke captured Main only, not the full skill or Additional reviewers. Docker/Dangerous use their selected native harness. Supported retries/follow-ups retain their thread's original capture and permissions; unsupported archived captures fail with an explicit action to save current Settings and start an independent question. Answers are private, code-grounded bullets and citations. Questions have their own single-slot lane, cancellation and durable interruption semantics. Dangerous native tools remain unrestricted independently of app publishing controls.
+An in-flow panel appears beneath the highlighted selection with its file, side, range and exact `base..head` commits. A selection must stay within one file. It may span hunks for reading, but an inline comment must stay within one hunk.
 
-Draft comment returns an author-facing comment, a severity and private evidence. Edit it in the composer and choose **Add to draft**; the finding then appears in the Draft card with its evidence read-only and a "Suggested by Ask AI" marker, and is saved through the normal Save draft control. Add comment opens the same composer empty. Either way the comment goes into the open draft's unsaved edits without discarding anything else you have typed, and nothing is posted to GitHub until you submit the review. The composer states where the comment will attach: the new side or the old side of the selected lines (a single line or a range within one hunk), or the review body only. A selection that mixes removed and added lines asks you to pick a side; a selection that spans hunks or has no line numbers can only go in the body. Findings therefore carry a side and an optional start line, and the exact preview shows `path:start-line`, the side and "multi-line" for each inline comment; a comment whose lines are not in the current diff on that side goes into the body, labelled `path:line (old)` for old-side anchors.
+### Ask AI
 
-A comment does not need an AI review first. If no draft is open, Add to draft creates a **local draft** for the current head: an ordinary draft with no review run behind it, labelled "Local draft" in the draft selector and the Status card, with an empty overview and without touching the last-reviewed time. A local draft is the latest draft for inbox status and Outdated purposes like any other, and one local draft exists per head. When the open draft targets an older commit than the selection, the composer refuses to attach silently and instead offers to open a compatible draft for that head or to create a local one; both are disabled until unsaved edits on the open draft are saved or discarded. If the pull request moves to a new head while a selection is open, the selection is cleared with a note and the thread remains readable in the Questions card.
+The panel offers Explain, Investigate, Draft comment and Add comment. New Ask AI threads capture the explicitly saved execution settings and selected base, head and range. Isolated questions invoke Main only, without the full skill or Additional reviewers; Docker and Dangerous use their selected native harness.
+
+Supported retries and follow-ups retain the original thread's capture and permissions. Archived unsupported captures fail with instructions to save current Settings and start an independent question. Answers remain private, with code-grounded bullets and citations.
+
+Questions have their own single-slot queue, cancellation and persistent interruption state. Dangerous native tools remain unrestricted regardless of app publishing controls.
+
+### Add a comment
+
+Draft comment returns an author-facing comment, severity and private evidence. Edit it in the composer, choose Add to draft and then use Save draft. The finding appears with read-only evidence and a Suggested by Ask AI marker.
+
+Add comment opens the same composer empty. Both actions add to the open draft's unsaved edits without discarding other text. Nothing reaches GitHub until you submit the review.
+
+The composer identifies whether the comment attaches to the new side, old side or review body. Inline comments cover one line or a range within one hunk. Mixed removed and added lines require a side choice; selections spanning hunks or lacking line numbers can only go in the body.
+
+Findings carry a side and optional start line. Exact preview shows `path:start-line`, the side and multi-line for inline ranges. A comment outside the current diff on that side goes into the body, labeled `path:line (old)` for an old-side anchor.
+
+### Local drafts and changed heads
+
+Comments do not require an AI review. If no draft is open, Add to draft creates one local draft for the current head, with no review run or overview and no change to last-reviewed time. It is labeled Local draft in the selector and Status card and counts as the latest draft for inbox status and Outdated checks.
+
+Only one local draft exists per head. If the open draft targets an older commit than your selection, the composer offers a compatible draft or a new local draft instead of attaching silently. Save or discard unsaved edits before either action.
+
+If the PR head changes while a selection is open, the app clears the selection with a note. Its thread remains readable in the Questions card.
