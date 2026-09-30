@@ -142,6 +142,8 @@ A draft separates the private overview, the GitHub review body and private findi
 
 The overview is a private engineering summary grounded in the code. It is read-only, never posted and unchanged by ordinary draft saves. Only a review result or accepted AI revision replaces it.
 
+New review and revision inputs include the immutable run's captured PR title, description and branch names as delimited, explicitly untrusted data. Ticket references and acceptance text come from that capture, not later PR edits or Settings changes. Missing or empty metadata remains missing or empty; the app invents no ticket criteria. Pinned base/head commits and the prohibition on resolving the live PR remain unchanged. This does not add a ticket lookup or verify live provider access, and it does not regenerate historical overviews or drafts.
+
 The app stores and renders the skill's complete overview Markdown without adding sections or rewriting older overviews. A skill can include ticket intent, changes, fulfilled or partial coverage, missing or unverified items, and a note that no ticket context was available. All headings and bullets remain intact.
 
 The GitHub review body is editable and posted verbatim, followed by any body-only findings. Finding evidence is private verification support from the review result, rendered read-only like the overview and body. Ordinary edits preserve it, and no submission payload includes it.
