@@ -55,6 +55,14 @@ On first launch:
 
 Connections for Isolated and Docker use separate app-owned authorization and explicit read grants. Authentication alone grants no reviewer tools, and Connected does not prove a successful content read. See [Connections](docs/execution-modes.md#connections) before granting provider access.
 
+## Review skill basics
+
+Select a trusted absolute `.md` entry in Settings, with its required companion resources available. The app supplies the final JSON schema and output instructions, so your skill does not need to repeat them. It should allow that output rather than insist on a prose-only final answer.
+
+Full reviews and AI revisions must return one JSON object with `overview`, `body`, `findings`, `verdict` and `rationale`. Markdown inside the text fields is fine; no particular headings are required. `overview`, finding `evidence` and `rationale` stay private, while `body` and included finding bodies can enter the confirmed GitHub payload.
+
+Invalid final output fails the run instead of creating a draft or revision proposal. See the [review skill guide](docs/review-output.md) for a minimal example, supported customization and the local `npm run check:review-output < candidate.json` checker, which needs no model or running app.
+
 ## Documentation
 
 - [Reviewing pull requests](docs/reviewing.md): inbox, drafts, comments, Ask AI, automation and concurrency.
