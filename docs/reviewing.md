@@ -13,7 +13,7 @@ Settings has four independent global defaults, grouped into polling and auto-rev
 
 - Poll for new commits refreshes every tracked open PR on the poll interval. It keeps stale indicators and new-commit lists current without an open detail page.
 - Auto-review new commits queues a `new_commits` review when a polled head changes. Title and description edits do not count, and this policy acts only while commit polling is on.
-- Poll for review requests lists the repository's open PRs and records requests addressed to you or your current teams, including same-commit re-requests. It refreshes tracked PRs so closed PRs and removed requests leave the inbox. Only matching or already tracked PRs are fetched in full; unrelated open PRs are never imported or diffed.
+- Poll for review requests lists the repository's open PRs and records requests addressed to you or your current teams, including same-commit re-requests. It refreshes tracked PRs so closed PRs and removed requests without an import or successful review/submission history leave the inbox. Only matching or already tracked PRs are fetched in full; unrelated open PRs are never imported or diffed.
 - Auto-review requests queues a review for each newly observed request event. It acts only while request polling is on.
 
 ### Per-PR overrides
@@ -48,13 +48,13 @@ Backend shutdown interrupts every active job and marks it interrupted. Restart r
 
 ## Inbox groups and ordering
 
-The inbox contains open PRs that request your review, request a review from one of your teams or were imported by URL. Each appears once in one of three collapsible groups:
+The inbox contains open PRs that request your review, request a review from one of your teams, were imported by URL or have a successful full review or confirmed submission saved locally. Each appears once in one of three collapsible groups:
 
 - Requested of you includes direct requests, including requests addressed to both you and a team.
 - Requested of your teams includes team-only requests for teams you currently belong to in the repository's organization.
-- Other tracked PRs includes imported PRs without a current request and legacy requested rows whose request type is not yet known.
+- Other tracked PRs includes imported or previously reviewed/submitted PRs without a current request and legacy requested rows whose request type is not yet known.
 
-Closed and merged PRs leave the inbox and stop being polled. PRs with removed requests do too unless imported by URL. Their runs, drafts, questions and submissions remain readable at their PR URLs and are never deleted.
+Closed and merged PRs leave the inbox and stop being polled. PRs with removed requests do too unless imported by URL or retained by successful review/submission history. Open reviewed/submitted PRs remain tracked across new commits and restarts; manual sync and enabled polling continue refreshing them until closed or merged. Retention is derived from completed full-review runs with a result or confirmed successful local submissions on any head. Page visits, local drafts alone, AI revisions, failed/incomplete runs and unrelated legacy fetched rows do not qualify. No automation settings change. Their runs, drafts, questions and submissions remain readable at their PR URLs and are never deleted.
 
 The first two groups start expanded and the third collapsed. Your choices persist for the browser session through navigation and live updates. Group headers support keyboard controls and show counts, or `shown of total` while filters apply.
 
@@ -100,7 +100,7 @@ Importing an open PR by URL marks it `imported`, even if already tracked or requ
 
 Running a review, opening a page or having a draft never counts as an import. Older databases add `imported` with every row unmarked because previous versions recorded no import provenance and could import unrelated PRs through broad polling.
 
-On upgrade, those unrequested rows leave the inbox and polling but retain their full history at their PR URLs. Import the same URL to track an open PR again without creating a duplicate. The migration queues no review and changes no draft. See the [import and sync lifecycle](sync-lifecycle.md) for operation status and request coalescing.
+On upgrade, those unrequested rows without successful full-review or confirmed submission history leave the inbox and polling but retain their full history at their PR URLs. Import the same URL to track an open PR again without creating a duplicate. The migration queues no review and changes no draft. See the [import and sync lifecycle](sync-lifecycle.md) for operation status and request coalescing.
 
 ## Merge readiness
 

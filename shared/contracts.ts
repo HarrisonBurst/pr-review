@@ -872,13 +872,16 @@ export interface PullRequest {
   changedFiles: number;
   lastReviewedAt: string | null;
   hasReviewedHead: boolean;
+  hasReviewHistory: boolean;
   mergeReadiness: MergeReadiness | null;
   automation: AutomationOverrides;
   effectiveAutomation: AutomationPolicy;
 }
 
 export function inboxEligible(pr: PullRequest): boolean {
-  return pr.state === "OPEN" && (pr.requested || pr.imported);
+  return (
+    pr.state === "OPEN" && (pr.requested || pr.imported || pr.hasReviewHistory)
+  );
 }
 
 export const reviewOutputVersion = "1.0";

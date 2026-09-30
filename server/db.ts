@@ -93,6 +93,7 @@ interface PrRow {
   changed_files: number;
   last_reviewed_at: string | null;
   has_reviewed_head: number;
+  has_review_history: number;
   diff: string;
   diff_truncated: number;
   automation_json: string;
@@ -223,7 +224,12 @@ export interface SyncMeta {
 const prProjection = `SELECT prs.*, EXISTS (
   SELECT 1 FROM runs WHERE runs.pr_id = prs.id AND runs.head_sha = prs.head_sha
     AND runs.kind = 'review' AND runs.status = 'completed' AND runs.result_json IS NOT NULL
-) AS has_reviewed_head FROM prs`;
+) AS has_reviewed_head, (EXISTS (
+  SELECT 1 FROM runs WHERE runs.pr_id = prs.id AND runs.kind = 'review'
+    AND runs.status = 'completed' AND runs.result_json IS NOT NULL
+) OR EXISTS (
+  SELECT 1 FROM submissions WHERE submissions.pr_id = prs.id AND submissions.status = 'submitted'
+)) AS has_review_history FROM prs`;
 
 const json = (value: unknown) => JSON.stringify(value);
 const parsed = <T>(value: string): T => JSON.parse(value) as T;
@@ -927,7 +933,7 @@ export class AppDatabase {
     return (
       this.sqlite
         .prepare(
-          `${prProjection} WHERE state = 'OPEN' AND (requested = 1 OR imported = 1) ORDER BY updated_at DESC, id`,
+          `${prProjection} WHERE state = 'OPEN' AND (requested = 1 OR imported = 1 OR has_review_history = 1) ORDER BY updated_at DESC, id`,
         )
         .all() as unknown as PrRow[]
     ).map((row) => this.toPr(row, global, readiness));
@@ -1667,6 +1673,7 @@ export class AppDatabase {
       changedFiles: row.changed_files,
       lastReviewedAt: row.last_reviewed_at,
       hasReviewedHead: row.has_reviewed_head === 1,
+      hasReviewHistory: row.has_review_history === 1,
       mergeReadiness: readiness.get(row.id) ?? null,
       automation,
       effectiveAutomation: effectiveAutomation(global, automation),

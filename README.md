@@ -1,6 +1,6 @@
 # Local PR Review
 
-Local PR Review is a single-user macOS app for reviewing GitHub pull requests with Claude Code, Codex or Pi and your own trusted review skill. It tracks requested and imported PRs, produces editable review drafts and lets you ask questions about selected code. You can also write comments without an AI review.
+Local PR Review is a single-user macOS app for reviewing GitHub pull requests with Claude Code, Codex or Pi and your own trusted review skill. It tracks requested, imported and previously reviewed/submitted open PRs until they close or merge, produces editable review drafts and lets you ask questions about selected code. You can also write comments without an AI review.
 
 Review runs stay separate from editable drafts. Re-review and AI revision proposals never silently replace manual edits. Publishing through the app requires a preview of the exact payload and your explicit confirmation.
 

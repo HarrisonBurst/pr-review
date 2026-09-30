@@ -81,6 +81,7 @@ function remote(headSha = "sha-1"): RemotePullRequest {
     changedFiles: 1,
     lastReviewedAt: null,
     hasReviewedHead: false,
+    hasReviewHistory: false,
     mergeReadiness: null,
     automation: inheritAutomation,
     effectiveAutomation: automationOff,
@@ -110,13 +111,15 @@ class FakeGithub implements GithubAdapter {
   readonly demo = false;
   current = remote();
   submitCalls = 0;
+  tracked: PullRequest[] = [];
   async health() {
     return { user: "tester", message: "fake" };
   }
   async getPullRequest() {
     return this.current;
   }
-  async poll(): Promise<PollResult> {
+  async poll(_repository: string, known: PullRequest[]): Promise<PollResult> {
+    this.tracked = known;
     return { user: "tester", pullRequests: [this.current], requests: [] };
   }
   async submitReview() {
@@ -1245,6 +1248,134 @@ test("revisions and proposals stay bound to their draft and version", async () =
       (error: unknown) =>
         error instanceof ServiceError && error.code === "draft_required",
     );
+  } finally {
+    await cleanup();
+  }
+});
+
+for (const submitted of [false, true]) {
+  test(`open reviewed PR remains tracked after request removal, submitted=${submitted}`, async () => {
+    const fixture = await makeService();
+    const { github, reviewer, config, dataDir } = fixture;
+    let service = fixture.service;
+    try {
+      await service.sync();
+      const draft = (await reviewed(service, github, reviewer, "sha-1")).draft!;
+      const edited = service.updateDraft(PR, {
+        draftId: draft.id,
+        version: draft.version,
+        body: "Manually preserved fixture text",
+        findings: draft.findings,
+        verdict: draft.verdict,
+      }).draft!;
+      if (submitted) {
+        const preview = await service.preview(PR, edited.id, edited.version);
+        await service.submit(PR, preview.id);
+      }
+      github.current.pr.requested = false;
+      github.current.pr.requestedAt = null;
+      github.current.pr.requestSource = null;
+      await service.sync();
+      assert.equal(service.getState().prs[0]?.hasReviewHistory, true);
+      assert.equal(service.getState().prs[0]?.imported, false);
+      assert.equal(service.getState().prs[0]?.requestSource, null);
+      const history = service.getDetail(PR);
+      await service.close();
+      service = await ReviewService.create(config, github, reviewer);
+      assert.equal(service.getState().prs[0]?.id, PR);
+      for (const polling of ["pollCommits", "pollRequests"] as const) {
+        service.db.updateSettings({
+          automation: { ...automationOff, [polling]: true },
+        });
+        await service.sync("scheduled");
+        assert.deepEqual(
+          github.tracked.map((pr) => pr.id),
+          [PR],
+        );
+      }
+      service.db.updateSettings({ automation: automationOff });
+      github.current.pr.headSha = "new-head";
+      await service.sync();
+      assert.deepEqual(
+        github.tracked.map((pr) => pr.id),
+        [PR],
+      );
+      assert.equal(service.getState().prs[0]?.hasReviewedHead, false);
+      assert.equal(service.getState().prs[0]?.hasReviewHistory, true);
+      assert.equal(service.getState().prs[0]?.status, "outdated");
+      for (const state of ["CLOSED", "MERGED"] as const) {
+        service.db.upsertPr(
+          { ...github.current.pr, state: "OPEN" },
+          github.current.diff,
+          false,
+        );
+        github.current.pr.state = state;
+        await service.sync();
+        assert.equal(service.getState().prs.length, 0);
+        const detail = service.getDetail(PR);
+        assert.deepEqual(detail.drafts, history.drafts);
+        assert.deepEqual(detail.runs, history.runs);
+        assert.deepEqual(detail.submissions, history.submissions);
+      }
+      assert.equal(reviewer.count, 1);
+      assert.deepEqual(service.db.getSettings().automation, automationOff);
+    } finally {
+      await service.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+}
+
+test("a confirmed local-draft submission retains an open PR without any full review", async () => {
+  const { service, github, cleanup } = await makeService();
+  try {
+    await service.sync();
+    const draft = service.createManualDraft(PR).draft!;
+    const edited = service.updateDraft(PR, {
+      draftId: draft.id,
+      version: draft.version,
+      body: "Synthetic manual review",
+      findings: [],
+      verdict: "COMMENT",
+    }).draft!;
+    const preview = await service.preview(PR, edited.id, edited.version);
+    await service.submit(PR, preview.id);
+    github.current.pr.requested = false;
+    await service.sync();
+    assert.equal(service.getState().prs[0]?.hasReviewHistory, true);
+    assert.equal(service.getState().prs[0]?.hasReviewedHead, false);
+    assert.equal(service.getDetail(PR).runs.length, 0);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("history eligibility excludes fetched rows, local drafts and unsuccessful or revision runs", async () => {
+  const { service, cleanup } = await makeService();
+  try {
+    const item = remote(HEAD1);
+    item.pr.requested = false;
+    service.db.upsertPr(item.pr, item.diff, false);
+    service.createManualDraft(PR);
+    for (const [index, over] of [
+      { kind: "revision", trigger: "revision" },
+      { status: "failed" },
+      { status: "interrupted" },
+      { status: "queued" },
+      { status: "running" },
+      { result: null },
+    ].entries()) {
+      service.db.createRun(
+        completedRun({
+          id: `excluded-${index}`,
+          ...over,
+        } as Partial<ReviewRun> & Pick<ReviewRun, "id">),
+      );
+      assert.equal(service.getDetail(PR).pr.hasReviewHistory, false);
+      assert.equal(service.getState().prs.length, 0);
+    }
+    service.db.markImported(PR);
+    assert.equal(service.getState().prs[0]?.id, PR);
   } finally {
     await cleanup();
   }

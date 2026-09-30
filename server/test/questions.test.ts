@@ -108,6 +108,7 @@ function remote(headSha = HEAD1): RemotePullRequest {
     changedFiles: 1,
     lastReviewedAt: null,
     hasReviewedHead: false,
+    hasReviewHistory: false,
     mergeReadiness: null,
     automation: inheritAutomation,
     effectiveAutomation: automationOff,

@@ -2185,13 +2185,17 @@ export class MockBackend {
       settings: this.settings,
       health: this.health,
       integrations: this.integrations,
-      prs: this.prs.filter(inboxEligible).map((pr) => this.pr(pr.id)),
+      prs: this.prs.map((pr) => this.pr(pr.id)).filter(inboxEligible),
     });
   }
 
   private pr(id: string) {
     const pr = this.prs.find((p) => p.id === id);
     if (!pr) throw new MockError(404, `Unknown PR ${id}`, "not_found");
+    pr.hasReviewHistory =
+      (this.runs[id] ?? []).some(
+        (run) => run.kind === "review" && run.status === "completed" && run.result !== null,
+      ) || (this.submissions[id] ?? []).some((submission) => submission.status === "submitted");
     pr.hasReviewedHead = (this.runs[id] ?? []).some(
       (run) =>
         run.kind === "review" &&

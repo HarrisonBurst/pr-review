@@ -161,6 +161,32 @@ describe("inbox", () => {
     );
   });
 
+  it("retains reviewed and submitted open rows in Other after request removal until closure", async () => {
+    const user = mount();
+    await screen.findByText("Apply volume discounts on invoices");
+    const retained = backend.prs.filter((pr) => ["pr-482", "pr-471"].includes(pr.id));
+    for (const pr of retained) {
+      pr.requested = false;
+      pr.requestSource = null;
+      pr.requestedAt = null;
+      pr.imported = false;
+    }
+    backend.sync();
+    await user.click(screen.getByText("Other tracked PRs"));
+    await waitFor(() =>
+      expect(rowTitles("Other tracked PRs")).toContain("#482Apply volume discounts on invoices"),
+    );
+    expect(rowTitles("Other tracked PRs")).toContain("#471Fix flaky clock test on CI");
+    retained[0].state = "CLOSED";
+    retained[1].state = "MERGED";
+    backend.sync();
+    await waitFor(() =>
+      expect(screen.queryByText("Apply volume discounts on invoices")).not.toBeInTheDocument(),
+    );
+    expect(screen.queryByText("Fix flaky clock test on CI")).not.toBeInTheDocument();
+    expect(backend.detail("pr-482").draft).not.toBeNull();
+  });
+
   it("keeps unrequested and unknown-provenance PRs reachable in Other with an honest hint", async () => {
     const user = mount();
     await screen.findByText("Apply volume discounts on invoices");
@@ -343,6 +369,7 @@ describe("inbox", () => {
     expect(backend.detail("pr-482").pr).toMatchObject({
       headSha: NEW_HEAD,
       hasReviewedHead: false,
+      hasReviewHistory: true,
     });
     window.location.hash = "#/";
     await screen.findByRole("heading", { name: "Inbox" });

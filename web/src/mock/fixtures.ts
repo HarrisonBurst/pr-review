@@ -904,6 +904,7 @@ const basePr = (
   changedFiles: 2,
   lastReviewedAt: null,
   hasReviewedHead: false,
+  hasReviewHistory: false,
   mergeReadiness: null,
   ...over,
 });
@@ -920,6 +921,7 @@ export const prs: PullRequest[] = [
     nonBlockingCount: 2,
     lastReviewedAt: t(25),
     hasReviewedHead: true,
+    hasReviewHistory: true,
     updatedAt: t(25),
     mergeReadiness: readiness("ready"),
   }),
@@ -993,6 +995,7 @@ export const prs: PullRequest[] = [
     changedFiles: 1,
     lastReviewedAt: t(1500),
     hasReviewedHead: true,
+    hasReviewHistory: true,
     updatedAt: t(1400),
     requested: false,
     requestedAt: null,
