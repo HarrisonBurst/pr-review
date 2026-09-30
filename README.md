@@ -61,7 +61,19 @@ Select a trusted absolute `.md` entry in Settings, with its required companion r
 
 Full reviews and AI revisions must return one JSON object with `overview`, `body`, `findings`, `verdict` and `rationale`. Markdown inside the text fields is fine; no particular headings are required. `overview`, finding `evidence` and `rationale` stay private, while `body` and included finding bodies can enter the confirmed GitHub payload.
 
-Invalid final output fails the run instead of creating a draft or revision proposal. See the [review skill guide](docs/review-output.md) for a minimal example, supported customization and the local `npm run check:review-output < candidate.json` checker, which needs no model or running app.
+A minimal synthetic final result, not a required skill template:
+
+```json
+{
+  "overview": "The cache now expires after refresh.",
+  "body": "No actionable defects found.",
+  "findings": [],
+  "verdict": "COMMENT",
+  "rationale": "Ticket context was unavailable."
+}
+```
+
+Invalid final output fails the run instead of creating a draft or revision proposal. See the [review skill guide](docs/review-output.md) for finding examples, supported customization and the local `npm run check:review-output < candidate.json` checker, which needs no model or running app.
 
 ## Documentation
 
