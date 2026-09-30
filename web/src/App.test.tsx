@@ -177,8 +177,8 @@ describe("inbox", () => {
       expect(rowTitles("Other tracked PRs")).toContain("#482Apply volume discounts on invoices"),
     );
     expect(rowTitles("Other tracked PRs")).toContain("#471Fix flaky clock test on CI");
-    retained[0].state = "CLOSED";
-    retained[1].state = "MERGED";
+    retained[0]!.state = "CLOSED";
+    retained[1]!.state = "MERGED";
     backend.sync();
     await waitFor(() =>
       expect(screen.queryByText("Apply volume discounts on invoices")).not.toBeInTheDocument(),
