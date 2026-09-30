@@ -202,7 +202,7 @@ Progress labels exclude prompts, reasoning, raw command arguments, credentials a
 
 ## Safe fixtures and operational limits
 
-Use a [labeled demo or mock server](../README.md#try-the-ui-without-credentials) on its own loopback port, with disposable HOME and data. Ordinary demo mode refuses native Isolated and Dangerous dispatch unless code-injected inert fixtures replace it. It does not substitute a single-review fixture for configured roles.
+Use a labeled demo or mock server on its own loopback port, with disposable HOME and data. Ordinary demo mode refuses native Isolated and Dangerous dispatch unless code-injected inert fixtures replace it. It does not substitute a single-review fixture for configured roles.
 
 The labeled web mock uses `VITE_MOCK_API=1` and covers Settings states through [documented URL parameters](../API_CONTRACT.md#web-implementation-on-these-contracts). Never submit a real GitHub review for a test.
 

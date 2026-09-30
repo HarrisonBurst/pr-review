@@ -14,15 +14,22 @@ The Node.js and TypeScript backend serves the React UI on loopback and stores pr
 
 ## Prerequisites
 
-Use macOS, Node.js 24 or newer, npm and Git. CI uses Node 24. The app uses Node's built-in SQLite, so you do not need a database service. Linux and headless operation are not supported.
+### Required
 
-For real repository use, install the official [GitHub CLI](https://cli.github.com/) and authenticate it with access to your repository. Check access with `gh auth status`. The app invokes `gh`, not an agent-specific wrapper.
+- Use macOS. Linux and headless operation are not supported.
+- Install Node.js 24 or newer, npm and Git. CI uses Node 24. The app uses Node's built-in SQLite and needs no database service.
+- Install the official [GitHub CLI](https://cli.github.com/) and authenticate it with access to your repository. Check authentication with `gh auth status` and repository access with `gh repo view owner/repository`, replacing `owner/repository` with your target. The app invokes `gh`, not an agent-specific wrapper.
 
-For AI work, install and authenticate your selected [Claude Code](https://code.claude.com/docs/en/setup), [Codex](https://github.com/openai/codex) or [Pi](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent) CLI through its supported native setup. If your skill invokes another harness, configure that harness too. Model catalog discovery does not prove account or model access.
+### For AI reviews and questions
 
-Install a trusted review skill yourself. The default entry, `~/.claude/skills/pr-review/SKILL.md`, is not bundled; choose an absolute Markdown entry in Settings if yours differs. Its resources and output must satisfy the [review output contract](docs/review-output.md).
+- Install and authenticate one supported CLI through its native setup: [Claude Code](https://code.claude.com/docs/en/setup), [Codex](https://github.com/openai/codex) or [Pi](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent). You do not need all three. Configure another harness only if your skill or selected workflow uses it.
+- Supply your own trusted review skill. The default entry, `~/.claude/skills/pr-review/SKILL.md`, is not bundled; choose an absolute Markdown entry in Settings if yours differs. Its resources and output must satisfy the [review output contract](docs/review-output.md).
 
-Docker is optional and needed only for Docker execution. Before consenting to app-managed setup, check the pinned runtime, architecture and authentication support in [Docker boundaries](docs/docker-boundaries.md). A working Docker installation alone is not enough.
+Model catalog discovery does not prove account or model access. You can write and edit comments without an AI harness or review skill.
+
+### Optional Docker execution
+
+Install Docker only if you choose Docker mode. Before consenting to app-managed setup, check the pinned runtime, architecture and authentication support in [Docker boundaries](docs/docker-boundaries.md). A working Docker installation alone is not enough.
 
 ## Install, build and run
 
@@ -47,25 +54,6 @@ On first launch:
 5. Inspect the exact Preview payload. Confirm a submission only when you intend to publish it to GitHub.
 
 Connections for Isolated and Docker use separate app-owned authorization and explicit read grants. Authentication alone grants no reviewer tools, and Connected does not prove a successful content read. See [Connections](docs/execution-modes.md#connections) before granting provider access.
-
-## Try the UI without credentials
-
-After building, run these commands from the repository root with disposable data and a separate port:
-
-```sh
-DEMO_HOME="$(mktemp -d)"
-HOME="$DEMO_HOME" PR_REVIEW_DATA_DIR="$DEMO_HOME/data" PR_REVIEW_PORT=4318 npm start -- --demo
-```
-
-Open <http://127.0.0.1:4318>. The Demo mode label identifies deterministic GitHub fixtures, which Sync now populates. They do not prove live GitHub or model access.
-
-Do not select native sources, connect providers or set up Docker during this tour. Ordinary demo mode refuses native review dispatch. For a fully synthetic editable draft and review flow, use the labeled web mock:
-
-```sh
-npm run dev:mock --workspace web -- --host 127.0.0.1 --port 5174 --strictPort
-```
-
-Open <http://127.0.0.1:5174> for seeded drafts or <http://127.0.0.1:5174/?setup> for empty setup. This mock never uses the backend or real providers, and its state resets on reload. Do not use `VITE_MOCK_API=1` for a real build.
 
 ## Documentation
 

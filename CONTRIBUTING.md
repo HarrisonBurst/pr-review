@@ -13,8 +13,6 @@ npm run dev
 
 The backend listens on `127.0.0.1:4317`; Vite on `127.0.0.1:5173` proxies `/api` there. For credential-free UI work use `npm run dev:mock --workspace web -- --host 127.0.0.1 --port 5174 --strictPort` instead. It is explicitly labeled and has seeded drafts; `/?setup` exercises empty onboarding. The mock resets on reload.
 
-[README](README.md#try-the-ui-without-credentials) also describes the real backend's disposable demo mode, which refuses ordinary native review dispatch.
-
 Run relevant fixture tests first, then the full checks once:
 
 ```sh
