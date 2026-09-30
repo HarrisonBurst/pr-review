@@ -65,13 +65,26 @@ A minimal synthetic final result, not a required skill template:
 
 ```json
 {
-  "overview": "The cache now expires after refresh.",
-  "body": "No actionable defects found.",
-  "findings": [],
-  "verdict": "COMMENT",
-  "rationale": "Ticket context was unavailable."
+  "overview": "The cancellation path can leave a request pending.",
+  "body": "Please resolve pending requests when cancelling.",
+  "findings": [
+    {
+      "id": "cancellation",
+      "severity": "blocking",
+      "path": "src/request.ts",
+      "line": 14,
+      "body": "Reject the pending promise before returning, or callers waiting for it never finish.",
+      "evidence": "In this fictional change, the new cancellation branch returns without settling the promise.",
+      "origin": "introduced",
+      "included": true
+    }
+  ],
+  "verdict": "REQUEST_CHANGES",
+  "rationale": "One introduced blocking defect in cancellation."
 }
 ```
+
+The checker validates format, not this fictional diff anchor, and grants no permission to publish.
 
 Invalid final output fails the run instead of creating a draft or revision proposal. See the [review skill guide](docs/review-output.md) for finding examples, supported customization and the local `npm run check:review-output < candidate.json` checker, which needs no model or running app.
 
