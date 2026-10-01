@@ -185,7 +185,7 @@ export class InertPublicationClassifier implements HumanReviewClassifier {
   }
 }
 
-export async function publicationFixture() {
+export async function publicationFixture(empty = false) {
   const dataDir = await mkdtemp(path.join(tmpdir(), "pr-review-publication-"));
   const config = loadConfig({
     demo: true,
@@ -207,8 +207,13 @@ export async function publicationFixture() {
     classifier,
   );
   service.queue.schedule = () => {};
-  await saveFixtureExecution(service);
-  await service.importPullRequest("https://github.com/demo/repository/pull/42");
+  if (empty) service.db.updateSettings({ repository: "" });
+  else {
+    await saveFixtureExecution(service);
+    await service.importPullRequest(
+      "https://github.com/demo/repository/pull/42",
+    );
+  }
   return {
     get service() {
       return service;

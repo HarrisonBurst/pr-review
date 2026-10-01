@@ -4,12 +4,12 @@ Start with the [installation guide](../README.md#install-build-and-run) and [exe
 
 - [Inbox](#inbox-groups-and-ordering) and [merge readiness](#merge-readiness).
 - [Drafts](#review-drafts), [Ask AI and comments](#selecting-code-ask-ai-and-manual-comments), and [output and progress](#review-output-and-progress).
-- [Automation](#automation-controls) and [concurrency](#review-concurrency).
+- [Draft-review automation](#automation-controls), [automatic submission](automatic-submission.md) and [concurrency](#review-concurrency).
 - [Safe fixtures and operational limits](#safe-fixtures-and-operational-limits).
 
 ## Automation controls
 
-Settings has four independent global defaults, grouped into polling and auto-review pairs:
+Settings has four independent global defaults, grouped into polling and auto-review pairs. These control private drafts, not permission to publish. The separate [default-off author/action publication policy](automatic-submission.md) enables neither pair:
 
 - Poll for new commits refreshes every tracked open PR on the poll interval. It keeps stale indicators and new-commit lists current without an open detail page.
 - Auto-review new commits queues a `new_commits` review when a polled head changes. Title and description edits do not count, and this policy acts only while commit polling is on.
@@ -130,6 +130,8 @@ Ready requires complete, coherent evidence for the exact head. The app records U
 
 Every successful full review creates an editable draft once from that run's immutable result. You can also create a local draft by hand without a review. Every draft has its own optimistic save version, and previews and submissions identify the exact draft.
 
+Begin editing waits for server-recorded edit intent before any typing, finding or verdict change. Pending or failed intent leaves controls read-only. That draft stays manual-only after discard, reload or restart, including when typing was never saved. A confirmed previously submitted draft can be edited and saved normally; its earlier immutable payload remains in submission history. Intent cannot cancel an already-dispatched write, and the same automatic version stays locked while its write is in flight or uncertain.
+
 Opening a PR shows the newest successful full review's draft, ordered by run creation. Failed or in-progress reviews do not hide the latest completed draft, and editing an older draft does not make it current. Older drafts remain selectable in the draft selector and Runs card, labeled by review number, commit and save version.
 
 A review that finishes while you edit adds and offers its new draft without switching or resetting your editor. Revision proposals stay bound to their source draft and version. A stale draft cannot be submitted just because a newer draft exists.
@@ -216,6 +218,6 @@ PR content is untrusted. App checkout preparation pins the exact base and head a
 
 Isolated Harnesses permits only bounded source and library reads, the canonical checker and captured audited gateway tools. Docker adds OS and container enforcement for explicitly approved code and excludes PR agent configuration from its writable copy. Dangerous removes the app's native-tool restrictions.
 
-App publishing always requires a fresh exact preview and explicit confirmation. The app reconciles uncertain writes instead of retrying automatically. Cancellation tracks process ownership but cannot contain malicious detached host descendants.
+Manual app publishing requires a fresh exact preview and explicit confirmation. Separately saved [future automatic-publication consent](automatic-submission.md) is the narrow exception, with fresh discussion/head and authority gates. The app reconciles uncertain writes instead of retrying automatically. Cancellation tracks process ownership but cannot contain malicious detached host descendants.
 
 Optional launchd installation is never automatic, and any installed service must remain loopback-only. The newcomer setup installs no login service, configures no credentials, enables no polling and publishes no reviews.

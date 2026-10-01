@@ -1310,13 +1310,14 @@ export class ReviewService {
           (item) =>
             item.authority?.kind === "automatic" &&
             item.authority.draftId === draft.id &&
-            item.authority.draftVersion === intent.version,
+            item.authority.draftVersion === intent.version &&
+            (item.status === "submitting" || item.status === "uncertain"),
         )
     )
       throw new ServiceError(
         409,
         "draft_conflict",
-        "Draft version changed or automatic publication already started; reload before editing",
+        "Draft version changed or automatic publication is in flight or uncertain; reload or reconcile before editing. Edit intent cannot cancel a dispatched write",
       );
     if (!draft.autoSubmission?.manualHold) {
       this.db.updateDraft({

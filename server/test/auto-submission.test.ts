@@ -247,7 +247,7 @@ test("edit intent after automatic dispatch starts fails stale instead of enablin
             draftId: draft.id,
             version: draft.version,
           }),
-        /publication already started/,
+        /publication is in flight or uncertain/,
       );
     };
     await f.automaticReview();
@@ -256,6 +256,27 @@ test("edit intent after automatic dispatch starts fails stale instead of enablin
       f.service.getDetail(PR).draft?.autoSubmission?.manualHold,
       null,
     );
+  }));
+
+test("uncertain automatic dispatch cannot acknowledge editable authority until exact reconciliation confirms the write", () =>
+  fixture(async (f) => {
+    f.save();
+    f.github.failWrite = true;
+    await f.automaticReview();
+    const draft = f.service.getDetail(PR).draft!;
+    assert.throws(
+      () =>
+        f.service.editIntent(PR, { draftId: draft.id, version: draft.version }),
+      /in flight or uncertain/,
+    );
+    await f.service.checkAutoSubmission(PR);
+    assert.equal(f.service.getDetail(PR).submissions[0]?.status, "submitted");
+    f.service.editIntent(PR, { draftId: draft.id, version: draft.version });
+    assert.equal(
+      f.service.getDetail(PR).draft?.autoSubmission?.manualHold?.reason,
+      "edit_intent",
+    );
+    assert.equal(f.github.writes.length, 1);
   }));
 
 test("revocation or unchanged Save during awaited work invalidates captured future consent", () =>

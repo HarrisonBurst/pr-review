@@ -185,7 +185,9 @@ export function AutoSubmissionCard({
           </button>
         </div>
         <p className="faint">
-          This explicit check refreshes head and discussion only. It never publishes or queues a
+          This explicit check freshly reads the PR head and discussion and may invoke the captured
+          Main model as a contextual classifier where zero-tool execution is supported. Unsupported
+          modes pause before model dispatch without fallback. It never publishes or queues a full
           review. Opening this panel does not run this check. Private drafting and manual exact
           preview remain available.
         </p>

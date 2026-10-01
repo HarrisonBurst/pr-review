@@ -7,6 +7,7 @@ import {
   automationOff,
   reviewVerdicts,
   type PullRequestDetail,
+  type Submission,
 } from "../../shared/contracts";
 import { App } from "./App";
 import { api } from "./api/client";
@@ -584,6 +585,74 @@ describe("server-observed editing", () => {
     expect(body()).toHaveValue("SYNTHETIC: remote saved body");
     expect(screen.getByLabelText("Review draft")).toHaveValue(current.id);
   });
+
+  const automaticAttempt = (b: MockBackend, status: Submission["status"]) => {
+    const current = b.detail("pr-482").draft!;
+    const preview = b.preview("pr-482", current.id, current.version);
+    const submission: Submission = {
+      id: "synthetic-automatic-submission",
+      previewId: preview.id,
+      status,
+      payload: structuredClone(preview.payload),
+      githubReviewId: status === "submitted" ? "synthetic-review-id" : null,
+      url: null,
+      error: null,
+      createdAt: new Date().toISOString(),
+      authority: {
+        kind: "automatic",
+        repository: "acme/rocket",
+        policyVersion: 0,
+        prGeneration: 0,
+        runId: current.runId!,
+        draftId: current.id,
+        draftVersion: current.version,
+        headSha: current.headSha,
+        discussionRevision: "synthetic-discussion",
+      },
+    };
+    b.submissions["pr-482"] = [submission];
+    if (status === "submitted") b.prs.find((pr) => pr.id === "pr-482")!.status = "submitted";
+  };
+
+  it("keeps confirmed submitted drafts editable, preserves their exact old submission and previews only the saved new version", async () => {
+    const user = mount({ editIntent: "locked" }, (b) => automaticAttempt(b, "submitted"));
+    await screen.findByLabelText(/GitHub review body/);
+    const previous = structuredClone(backend.submissions["pr-482"]![0]!);
+    await begin(user);
+    await user.type(body(), " SYNTHETIC edit after submission.");
+    await user.click(screen.getByRole("button", { name: "Save draft" }));
+    await screen.findByText("Draft saved");
+    expect(backend.detail("pr-482").draft!.version).toBe(4);
+    expect(backend.submissions["pr-482"]![0]).toEqual(previous);
+    cleanup();
+    backend.restart();
+    render(<App mock />);
+    await screen.findByLabelText(/GitHub review body/);
+    expect(body()).not.toHaveAttribute("readonly");
+    expect((body() as HTMLTextAreaElement).value).toContain("SYNTHETIC edit after submission.");
+    await user.click(screen.getByRole("button", { name: "Preview and submit" }));
+    const dialog = within(await screen.findByRole("dialog"));
+    const payload = await dialog.findByTestId("payload-body");
+    expect(JSON.parse(payload.textContent!).body).toContain("SYNTHETIC edit after submission.");
+    await user.click(dialog.getByRole("button", { name: "Cancel" }));
+    expect(backend.submissions["pr-482"]).toEqual([previous]);
+    expect(screen.getByText(/may invoke the captured Main model/)).toBeInTheDocument();
+  });
+
+  it.each(["submitting", "uncertain"] as const)(
+    "cannot acknowledge editable authority for an automatic %s version",
+    async (status) => {
+      const user = mount({ editIntent: "locked" }, (b) => automaticAttempt(b, status));
+      await screen.findByLabelText(/GitHub review body/);
+      await user.click(draft().getByRole("button", { name: "Begin editing" }));
+      await screen.findByText(
+        /Editing remains locked: SYNTHETIC: publication is in flight or uncertain/,
+      );
+      expect(body()).toHaveAttribute("readonly");
+      expect(backend.submissions["pr-482"]![0]!.status).toBe(status);
+      expect(backend.detail("pr-482").draft?.autoSubmission?.manualHold).toBeUndefined();
+    },
+  );
 
   it("keeps a successful intent permanent after discard and remount, while exact manual preview stays unchanged", async () => {
     const user = mount({ editIntent: "locked", autoSubmission: "human" });

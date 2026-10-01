@@ -2290,6 +2290,20 @@ export class MockBackend {
     const draft = this.draft(id, intent.draftId);
     if (intent.version !== draft.version || this.options.editIntent === "stale")
       throw new MockError(409, "SYNTHETIC: draft version changed", "draft_conflict");
+    if (
+      (this.submissions[id] ?? []).some(
+        (submission) =>
+          submission.authority?.kind === "automatic" &&
+          submission.authority.draftId === draft.id &&
+          submission.authority.draftVersion === intent.version &&
+          (submission.status === "submitting" || submission.status === "uncertain"),
+      )
+    )
+      throw new MockError(
+        409,
+        "SYNTHETIC: publication is in flight or uncertain; intent cannot cancel it",
+        "draft_conflict",
+      );
     draft.autoSubmission ??= { provenance: null, manualHold: null };
     draft.autoSubmission.manualHold ??= { reason: "edit_intent", at: this.now() };
     this.emit(id);

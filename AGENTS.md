@@ -6,7 +6,7 @@ A local-first Mac developer tool for reviewing GitHub PRs with the user's existi
 
 - React and TypeScript web UI, Node.js TypeScript backend, SQLite persistence, Claude Code CLI reviewer.
 - Single user, one configured GitHub repository initially. Bind only to loopback.
-- AI produces drafts. GitHub writes require an explicit user-confirmed preview of the exact payload.
+- AI produces drafts. Manual GitHub writes require an explicit user-confirmed preview of the exact payload. The sole automatic exception is separately saved, repository-specific, default-off author/action consent for untouched future automatic full-review drafts, using the same canonical exact payload and fresh human-review, edit, consent, head, deduplication and uncertain-write gates. Saving this consent never enables polling/reviewing or publishes backlog; implementation approval is not production activation.
 - Keep automatic polling and reviews disabled until the user explicitly asks to enable them. Manual sync only refreshes data while disabled; individual review/revision actions remain available.
 - Existing skill defaults to ~/.claude/skills/pr-review/SKILL.md. It uses Codex as a secondary reviewer. Do not modify the user's installed skills or authentication.
 - Preserve immutable review runs separately from editable drafts and submissions. Re-review and AI revision never silently overwrite manual edits.
