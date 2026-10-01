@@ -38,6 +38,7 @@ export function checkoutEnvironment(
     ...env,
     GIT_ASKPASS: "/usr/bin/false",
     GH_PROMPT_DISABLED: "1",
+    LC_ALL: "C",
     GIT_CONFIG_GLOBAL: "/dev/null",
     GIT_TEMPLATE_DIR: "/dev/null",
     GIT_CONFIG_COUNT: "3",

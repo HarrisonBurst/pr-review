@@ -190,6 +190,44 @@ for (const state of ["unavailable", "denied"])
     }
   });
 
+for (const state of ["unavailable", "denied"])
+  test(`synthetic ${state} head credentials do not retry authentication through SHA fallback`, async (t) => {
+    const f = await githubAcquisitionFixture();
+    try {
+      const checkout = new SourceCheckout(f.env);
+      const git = checkout.git.bind(checkout);
+      const targets: string[] = [];
+      t.mock.method(
+        checkout,
+        "git",
+        async (args: string[], cwd: string, signal?: AbortSignal) => {
+          if (args.includes("fetch")) targets.push(args.at(-1)!);
+          if (args.at(-1) === "pull/7/head") f.env.FIXTURE_CREDENTIAL = state;
+          return git(args, cwd, signal);
+        },
+      );
+      let failure: unknown;
+      try {
+        await checkout.prepare(f.identity, f.source, f.checkout);
+      } catch (error) {
+        failure = error;
+      }
+      assert.ok(failure instanceof CommandFailure);
+      assert.match(failure.summary, /Unable to prepare recorded head/);
+      assert.equal(failure.message.includes(f.canary), false);
+      assert.deepEqual(targets, [f.identity.baseSha, "pull/7/head"]);
+      const calls = await f.calls();
+      const cloneIndex = calls.findIndex((call) => call.kind === "clone");
+      assert.equal(
+        calls.slice(cloneIndex + 1).filter((call) => call.operation === "get")
+          .length,
+        2,
+      );
+    } finally {
+      await f.close();
+    }
+  });
+
 for (const origin of [
   "https://github.com/fixture/other.git",
   "https://example.invalid/fixture/repository.git",
@@ -320,6 +358,7 @@ test("checkout environment retains config isolation and disables credential-bear
     GIT_TRACE_CURL: "1",
     GIT_CURL_VERBOSE: "1",
     GIT_ASKPASS: "untrusted",
+    LC_ALL: "synthetic-untrusted-locale",
     HOME: "/synthetic/home",
   });
   assert.equal(env.GIT_CONFIG_PARAMETERS, undefined);
@@ -327,6 +366,7 @@ test("checkout environment retains config isolation and disables credential-bear
   assert.equal(env.GIT_TRACE_CURL, undefined);
   assert.equal(env.GIT_CURL_VERBOSE, undefined);
   assert.equal(env.GIT_ASKPASS, "/usr/bin/false");
+  assert.equal(env.LC_ALL, "C");
   assert.equal(env.GIT_CONFIG_GLOBAL, "/dev/null");
   assert.equal(env.GIT_CONFIG_NOSYSTEM, "1");
   assert.equal(env.GIT_TERMINAL_PROMPT, "0");

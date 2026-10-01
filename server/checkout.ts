@@ -232,7 +232,12 @@ export class SourceCheckout {
       checkoutDir,
       signal,
     );
-    if (headFetch.code !== 0)
+    if (
+      headFetch.code !== 0 &&
+      !/(?:authentication failed|could not read (?:username|password)|requested URL returned error: (?:401|403))/i.test(
+        headFetch.stderr,
+      )
+    )
       headFetch = await this.git(
         [...fetchArguments, "fetch", "--no-tags", "origin", source.headSha],
         checkoutDir,
