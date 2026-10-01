@@ -82,6 +82,7 @@ interface PrRow {
   requested: number;
   requested_at: string | null;
   request_source: PullRequest["requestSource"];
+  historical_request_source: PullRequest["historicalRequestSource"];
   imported: number;
   created_at: string | null;
   updated_at: string;
@@ -328,6 +329,7 @@ export class AppDatabase {
         requested INTEGER NOT NULL,
         requested_at TEXT,
         request_source TEXT,
+        historical_request_source TEXT,
         imported INTEGER NOT NULL DEFAULT 0,
         created_at TEXT,
         updated_at TEXT NOT NULL,
@@ -511,6 +513,29 @@ export class AppDatabase {
         ALTER TABLE prs ADD COLUMN request_source TEXT;
         ALTER TABLE prs ADD COLUMN created_at TEXT;
       `);
+    if (!this.columns("prs").has("historical_request_source"))
+      this.transaction(() => {
+        this.sqlite.exec(`
+          ALTER TABLE prs ADD COLUMN historical_request_source TEXT;
+          WITH evidence AS (
+            SELECT id AS pr_id, request_source AS source FROM prs WHERE requested = 1
+            UNION ALL
+            SELECT runs.pr_id, json_extract(run_snapshots.pr_json, '$.requestSource')
+            FROM run_snapshots JOIN runs ON runs.id = run_snapshots.run_id
+            WHERE json_extract(run_snapshots.pr_json, '$.requested') = 1
+          ), history AS (
+            SELECT pr_id,
+              MAX(source IN ('direct', 'both')) AS direct,
+              MAX(source IN ('team', 'both')) AS team
+            FROM evidence WHERE source IN ('direct', 'team', 'both') GROUP BY pr_id
+          )
+          UPDATE prs SET historical_request_source = (
+            SELECT CASE WHEN direct = 1 AND team = 1 THEN 'both'
+              WHEN direct = 1 THEN 'direct' ELSE 'team' END
+            FROM history WHERE history.pr_id = prs.id
+          );
+        `);
+      });
     if (!this.columns("prs").has("imported"))
       this.sqlite.exec(
         "ALTER TABLE prs ADD COLUMN imported INTEGER NOT NULL DEFAULT 0",
@@ -858,13 +883,18 @@ export class AppDatabase {
       .prepare(
         `INSERT INTO prs (
       id, number, repository, url, title, body, author, author_avatar_url, head_sha, base_sha, head_ref, base_ref,
-      state, requested, requested_at, request_source, created_at, updated_at, status, blocking_count, non_blocking_count,
+      state, requested, requested_at, request_source, historical_request_source, created_at, updated_at, status, blocking_count, non_blocking_count,
       additions, deletions, changed_files, last_reviewed_at, diff, diff_truncated
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET number=excluded.number, repository=excluded.repository, url=excluded.url, title=excluded.title,
       body=excluded.body, author=excluded.author, author_avatar_url=excluded.author_avatar_url, head_sha=excluded.head_sha,
       base_sha=excluded.base_sha, head_ref=excluded.head_ref, base_ref=excluded.base_ref, state=excluded.state,
       requested=excluded.requested, requested_at=excluded.requested_at, request_source=excluded.request_source,
+      historical_request_source=CASE
+        WHEN excluded.historical_request_source IS NULL THEN prs.historical_request_source
+        WHEN prs.historical_request_source IS NULL OR prs.historical_request_source = excluded.historical_request_source
+          THEN excluded.historical_request_source
+        ELSE 'both' END,
       created_at=COALESCE(excluded.created_at, prs.created_at), updated_at=excluded.updated_at, status=excluded.status,
       blocking_count=excluded.blocking_count, non_blocking_count=excluded.non_blocking_count, additions=excluded.additions,
       deletions=excluded.deletions, changed_files=excluded.changed_files, diff=excluded.diff, diff_truncated=excluded.diff_truncated`,
@@ -886,6 +916,9 @@ export class AppDatabase {
         pr.requested ? 1 : 0,
         pr.requestedAt,
         pr.requested ? pr.requestSource : null,
+        pr.requested && pr.requestSource !== "unknown"
+          ? pr.requestSource
+          : null,
         pr.createdAt,
         pr.updatedAt,
         pr.status,
@@ -1662,6 +1695,7 @@ export class AppDatabase {
       requestedAt: row.requested_at,
       requestSource:
         row.requested === 1 ? (row.request_source ?? "unknown") : null,
+      historicalRequestSource: row.historical_request_source,
       imported: row.imported === 1,
       createdAt: row.created_at,
       updatedAt: row.updated_at,

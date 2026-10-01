@@ -50,9 +50,11 @@ Backend shutdown interrupts every active job and marks it interrupted. Restart r
 
 The inbox contains open PRs that request your review, request a review from one of your teams, were imported by URL or have a successful full review or confirmed submission saved locally. Each appears once in one of three collapsible groups:
 
-- Requested of you includes direct requests, including requests addressed to both you and a team.
-- Requested of your teams includes team-only requests for teams you currently belong to in the repository's organization.
-- Other tracked PRs includes imported or previously reviewed/submitted PRs without a current request and legacy requested rows whose request type is not yet known.
+- Requested of you includes PRs with a known direct request now or in their locally recorded history, including requests addressed to both you and a team.
+- Requested of your teams includes PRs with a known request to one of your teams now or in their locally recorded history, but no known direct request. Team membership is checked when the request is observed.
+- Other tracked PRs includes imported or previously reviewed/submitted PRs without known personal/team request provenance and legacy requested rows whose request type is not yet known.
+
+Completing a review or removing the current GitHub request does not move a retained PR out of its historical requested group. A known personal request takes precedence over a team request, even if they were observed separately, so each PR still appears only once. This changes grouping, not inbox eligibility.
 
 Closed and merged PRs leave the inbox and stop being polled. PRs with removed requests do too unless imported by URL or retained by successful review/submission history. Open reviewed/submitted PRs remain tracked across new commits and restarts; manual sync and enabled polling continue refreshing them until closed or merged. Retention is derived from completed full-review runs with a result or confirmed successful local submissions on any head. Page visits, local drafts alone, AI revisions, failed/incomplete runs and unrelated legacy fetched rows do not qualify. No automation settings change. Their runs, drafts, questions and submissions remain readable at their PR URLs and are never deleted.
 
@@ -92,9 +94,11 @@ Age means latest request time in the requested groups and PR creation time in Ot
 
 ### Request and import history
 
-Request provenance is `direct`, `team` or `both`, read from GitHub's requested reviewers and your team membership on each request sync. It clears when the request disappears or the PR closes. Commit-only polls, freshness checks and other refreshes that do not read requests leave it unchanged.
+Current request provenance is `direct`, `team` or `both`, read from GitHub's requested reviewers and your team membership on each request sync. The current flag and provenance clear when the request disappears or the PR closes. Separately recorded historical provenance accumulates genuine known direct/team requests and survives request removal, sync, new commits, closure and restart. If a retained PR reopens, it returns to its historical group. Commit-only polls, freshness checks and other refreshes that do not read requests cannot erase that history.
 
-Older databases gain empty `request_source` and `created_at` columns. Previously requested rows appear under Other tracked PRs with `requested, type unknown` until a request sync records their provenance. The next PR refresh fills creation time; nothing is inferred from the author or title.
+On upgrade, historical provenance is backfilled only from typed current requests and immutable local run snapshots that actually recorded a request with known `direct`, `team` or `both` provenance. A successful review or submission alone, an import, an untyped request event or an author's team membership is not evidence of who was requested. Already-erased request types with no such snapshot cannot be recovered locally; these PRs stay in Other tracked PRs until genuine request provenance is observed on an ordinary request sync. The migration makes no GitHub or historical timeline requests, queues no reviews and changes no drafts or automation.
+
+Databases predating current provenance still gain empty `request_source` and `created_at` columns. Requested rows with no known provenance appear under Other tracked PRs with `requested, type unknown` until a request sync records their provenance. The next PR refresh fills creation time; nothing is inferred from the author or title.
 
 Importing an open PR by URL marks it `imported`, even if already tracked or requested. That mark survives refreshes, polls and request removal. Closed or merged imports fail with a clear error while preserving existing history.
 

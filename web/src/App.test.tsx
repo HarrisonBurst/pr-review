@@ -161,10 +161,17 @@ describe("inbox", () => {
     );
   });
 
-  it("retains reviewed and submitted open rows in Other after request removal until closure", async () => {
+  it("keeps known personal/team history after requests clear, with precedence and closure safety", async () => {
     const user = mount();
     await screen.findByText("Apply volume discounts on invoices");
-    const retained = backend.prs.filter((pr) => ["pr-482", "pr-471"].includes(pr.id));
+    const retained = backend.prs.filter((pr) =>
+      ["pr-482", "pr-479", "pr-475", "pr-471"].includes(pr.id),
+    );
+    backend.runs["pr-479"]!.push({
+      ...backend.runs["pr-482"]![0]!,
+      id: "retained-team-review",
+      prId: "pr-479",
+    });
     for (const pr of retained) {
       pr.requested = false;
       pr.requestSource = null;
@@ -174,17 +181,39 @@ describe("inbox", () => {
     backend.sync();
     await user.click(screen.getByText("Other tracked PRs"));
     await waitFor(() =>
-      expect(rowTitles("Other tracked PRs")).toContain("#482Apply volume discounts on invoices"),
+      expect(rowTitles("Requested of you")).toContain("#482Apply volume discounts on invoices"),
+    );
+    expect(rowTitles("Requested of you")).toContain("#475Migrate sessions table to UUID keys");
+    expect(rowTitles("Requested of your teams")).toContain(
+      "#479Retry webhook deliveries with jitter",
     );
     expect(rowTitles("Other tracked PRs")).toContain("#471Fix flaky clock test on CI");
-    retained[0]!.state = "CLOSED";
-    retained[1]!.state = "MERGED";
+    const personal = retained.find((pr) => pr.id === "pr-482")!;
+    personal.requested = true;
+    personal.requestSource = "team";
+    personal.headSha = "new-inert-head";
+    backend.sync();
+    await waitFor(() =>
+      expect(
+        rowTitles("Requested of you").filter((title) => title.startsWith("#482")),
+      ).toHaveLength(1),
+    );
+    expect(rowTitles("Requested of your teams").some((title) => title.startsWith("#482"))).toBe(
+      false,
+    );
+    personal.state = "CLOSED";
+    retained.find((pr) => pr.id === "pr-479")!.state = "MERGED";
     backend.sync();
     await waitFor(() =>
       expect(screen.queryByText("Apply volume discounts on invoices")).not.toBeInTheDocument(),
     );
-    expect(screen.queryByText("Fix flaky clock test on CI")).not.toBeInTheDocument();
+    expect(screen.queryByText("Retry webhook deliveries with jitter")).not.toBeInTheDocument();
     expect(backend.detail("pr-482").draft).not.toBeNull();
+    personal.state = "OPEN";
+    backend.sync();
+    await waitFor(() =>
+      expect(rowTitles("Requested of you")).toContain("#482Apply volume discounts on invoices"),
+    );
   });
 
   it("keeps unrequested and unknown-provenance PRs reachable in Other with an honest hint", async () => {
