@@ -31,6 +31,8 @@ Use the lockfile's installed tools, not an unpinned downloaded formatter. For a 
 
 The default tests use deterministic fixtures. Docker/native-bundle and real Keychain cases are opt-in and skipped unless their documented test environment is explicitly provided; CI does not enable them.
 
+The native-import policy and archived-history tests emit bounded `isolated` node:test diagnostics only on failure. Body and cleanup outcomes remain separate, alongside the last dispatch attempt/phase/status and the latest 256 fixture-child events. Signal attribution `child_pid_read` identifies the actual spawned ChildProcess whose PID was read in the same synchronous turn, not a PID lookup. It does not verify the OS process incarnation, UID or surviving process-group membership. No process scans are added. Messages, stacks, arguments, environment, configuration and review content are excluded; retain the original test failure as well as this diagnostic, without treating a later pass as a causal explanation.
+
 Do not supply production credentials, run live model/provider requests, submit GitHub reviews or enable polling for tests. Never execute PR-provided scripts, hooks or agent configuration. Use disposable data and clearly labeled fixtures when exercising a real browser.
 
 ## Change boundaries
