@@ -28,6 +28,7 @@ import { loadConfig, type AppConfig } from "../config.js";
 import type { ProgressReporter } from "../progress.js";
 import { ReviewService, ServiceError } from "../service.js";
 import { prId } from "../util.js";
+import type { ReviewInventory } from "../publication.js";
 
 const reviewerSettings: ReviewerSettings = {
   skillPath: "/tmp/skill/SKILL.md",
@@ -99,6 +100,13 @@ class FakeGithub implements GithubAdapter {
   failSubmit = false;
   holdSubmit = false;
   reconciliation: ReviewSubmissionResult | null = null;
+  private inventory: ReviewInventory = {
+    writer: "tester",
+    reviewIds: [],
+    reviews: [],
+  };
+  private lastAttempt: { payload: ReviewPayload; submittedAt: string } | null =
+    null;
   private releaseHeldSubmit: (() => void) | null = null;
   async health() {
     return { user: "tester", message: "fake" };
@@ -126,17 +134,44 @@ class FakeGithub implements GithubAdapter {
     this.releaseHeldSubmit?.();
     this.releaseHeldSubmit = null;
   }
-  async submitReview(_pr: PullRequest, _payload: ReviewPayload) {
+  async submitReview(_pr: PullRequest, payload: ReviewPayload) {
     this.submitCalls += 1;
     if (this.holdSubmit)
       await new Promise<void>((resolve) => {
         this.releaseHeldSubmit = resolve;
       });
-    if (this.failSubmit) throw new Error("connection dropped after request");
-    return {
-      githubReviewId: "review-1",
-      url: "https://github.com/owner/repo/pull/7#review-1",
+    this.lastAttempt = {
+      payload: structuredClone(payload),
+      submittedAt: new Date(Date.now() + 1).toISOString(),
     };
+    if (this.failSubmit) throw new Error("connection dropped after request");
+    const result = {
+      githubReviewId: `review-${this.submitCalls}`,
+      url: `https://github.com/owner/repo/pull/7#review-${this.submitCalls}`,
+    };
+    this.recordReview(result);
+    return result;
+  }
+  private recordReview(result: ReviewSubmissionResult) {
+    if (!this.lastAttempt)
+      throw new Error("SYNTHETIC review has no attempted payload");
+    this.inventory.reviews = this.inventory.reviews.filter(
+      (item) => item.id !== result.githubReviewId,
+    );
+    this.inventory.reviews.push({
+      id: result.githubReviewId,
+      url: result.url,
+      author: "tester",
+      ...this.lastAttempt,
+      commentIds: this.lastAttempt.payload.comments.map(
+        (_, index) => `${result.githubReviewId}-${index}`,
+      ),
+    });
+    this.inventory.reviewIds = this.inventory.reviews.map((item) => item.id);
+  }
+  async reviewInventory(): Promise<ReviewInventory> {
+    if (this.reconciliation) this.recordReview(this.reconciliation);
+    return structuredClone(this.inventory);
   }
   async compareCommits(): Promise<CommitComparison> {
     return { status: "identical", commits: [], truncated: false };

@@ -1,4 +1,14 @@
 import {
+  autoSubmissionConfirmation,
+  autoSubmissionReenableConfirmation,
+  normalizeAutoSubmissionAuthors,
+  normalizeGithubUsername,
+  type AutoSubmissionUpdate,
+  type AutoSubmissionState,
+  type AutoSubmissionReenable,
+  type HumanReviewAcknowledgment,
+  type AutomaticReviewProvenance,
+  type DraftEditIntent,
   automationOff,
   inboxEligible,
   dangerousConfirmation,
@@ -47,6 +57,18 @@ import {
   ReviewerInput,
 } from "./adapters.js";
 import { AppConfig } from "./config.js";
+import {
+  NativeHumanReviewClassifier,
+  validateClassification,
+  type HumanReviewClassifier,
+} from "./human-review.js";
+import {
+  automaticallyReviewed,
+  exactReview,
+  sameReviewPayload,
+  type ReviewInventory,
+} from "./publication.js";
+import { emptyCoverage, revision } from "./discussion.js";
 import { ConfiguredWorkflows } from "./execution/workflows.js";
 import { ReadProviders, importReadProviders } from "./read-providers.js";
 import {
@@ -194,6 +216,7 @@ const draftDerivedStatuses = new Set<PullRequest["status"]>([
 ]);
 
 interface ObserveOptions {
+  preserveBaseline?: boolean;
   requestsKnown: boolean;
   automatic: boolean;
 }
@@ -330,6 +353,12 @@ export class ReviewService {
   private readonly importOperations = new Map<string, ImportOperation>();
   private readonly activeJobs = new Set<Promise<void>>();
   private closed = false;
+  private readonly classifier: HumanReviewClassifier;
+  private readonly classificationCache = new Map<
+    string,
+    Awaited<ReturnType<HumanReviewClassifier["classify"]>>
+  >();
+  private readonly scans = new Map<string, Promise<void>>();
 
   constructor(
     readonly config: AppConfig,
@@ -344,7 +373,12 @@ export class ReviewService {
       db.sqlite,
       `http://127.0.0.1:${config.port}/api/mcp/oauth/callback`,
     ),
+    classifier?: HumanReviewClassifier,
   ) {
+    if (classifier && !config.demo)
+      throw new Error(
+        "Synthetic classifier injection requires explicit demo mode",
+      );
     this.db = db;
     this.readProviders.oauth = mcpOAuth;
     this.mcpOAuth.validateSource = (id) => this.requireOAuthConnection(id);
@@ -359,6 +393,15 @@ export class ReviewService {
       this.readProviders,
       !config.demo || commandEnv !== process.env,
     );
+    this.classifier =
+      classifier ??
+      new NativeHumanReviewClassifier(
+        config.dataDir,
+        commandEnv,
+        github === undefined &&
+          !config.demo &&
+          this.github instanceof GithubCliAdapter,
+      );
     this.reviewer = adapters.reviewer;
     this.questioner = adapters.questioner;
     this.queue = new ReviewQueue(this);
@@ -375,6 +418,7 @@ export class ReviewService {
     commandEnv: NodeJS.ProcessEnv = process.env,
     readProviders = new ReadProviders(),
     oauthFactory?: (db: AppDatabase) => McpOAuth,
+    classifier?: HumanReviewClassifier,
   ): Promise<ReviewService> {
     const db = await AppDatabase.open(config.databasePath);
     let executor: ConfiguredWorkflows | null = null;
@@ -418,6 +462,7 @@ export class ReviewService {
         commandEnv,
         readProviders,
         oauthFactory?.(db),
+        classifier,
       );
       service.reconcileDraftStates();
       await service.refreshHealth();
@@ -442,7 +487,7 @@ export class ReviewService {
     if (this.pollTimer) clearInterval(this.pollTimer);
     await this.executor?.close();
     await terminateRunningCommands();
-    await Promise.all([...this.activeJobs]);
+    await Promise.all([...this.activeJobs, ...this.scans.values()]);
     this.db.markInterruptedJobs();
     this.db.markInterruptedQuestions();
     this.db.close();
@@ -478,7 +523,9 @@ export class ReviewService {
         pollError: meta.pollError,
       },
       integrations: this.getIntegrations(),
-      prs: this.db.listInboxPrs(),
+      prs: this.db
+        .listInboxPrs()
+        .map((pr) => ({ ...pr, autoSubmission: this.autoSubmissionState(pr) })),
     };
   }
 
@@ -488,7 +535,7 @@ export class ReviewService {
     const diff = this.db.getDiff(prId)!;
     const drafts = this.db.listDrafts(prId);
     return {
-      pr,
+      pr: { ...pr, autoSubmission: this.autoSubmissionState(pr) },
       diff: diff.diff,
       diffTruncated: diff.truncated,
       runs: this.db.listRuns(prId),
@@ -1196,8 +1243,803 @@ export class ReviewService {
     this.observe(remote, { requestsKnown: false, automatic: true });
     this.db.markImported(remote.pr.id);
     await this.recordMergeReadiness(remote.pr.id);
+    if (automaticallyReviewed(this.requirePr(remote.pr.id)))
+      await this.scanHumanReview(remote.pr.id);
     this.emit(remote.pr.id);
     return this.getDetail(remote.pr.id);
+  }
+
+  saveAutoSubmission(update: AutoSubmissionUpdate): AppState {
+    const current = this.db.getSettings();
+    const policy = current.autoSubmission!;
+    const authors = normalizeAutoSubmissionAuthors(update.authors);
+    if (
+      !authors ||
+      typeof update.repository !== "string" ||
+      typeof update.enabled !== "boolean" ||
+      !Number.isInteger(update.expectedVersion) ||
+      update.expectedVersion < 0 ||
+      Object.keys(update).some(
+        (key) =>
+          ![
+            "repository",
+            "expectedVersion",
+            "enabled",
+            "authors",
+            "confirmation",
+          ].includes(key),
+      ) ||
+      (update.confirmation !== undefined &&
+        update.confirmation !== autoSubmissionConfirmation) ||
+      (update.enabled && update.confirmation !== autoSubmissionConfirmation)
+    )
+      throw new ServiceError(
+        400,
+        "invalid_auto_submission",
+        "Invalid author/action table or missing explicit future-publication consent",
+      );
+    if (
+      !current.repository ||
+      current.repository.toLowerCase() !== update.repository.toLowerCase() ||
+      policy.version !== update.expectedVersion
+    )
+      throw new ServiceError(
+        409,
+        "auto_submission_conflict",
+        "Repository or publication policy changed; reload before saving",
+      );
+    this.db.savePublicationPolicy({
+      repository: current.repository,
+      enabled: update.enabled,
+      authors,
+      version: policy.version + 1,
+      consentedAt: update.enabled ? now() : null,
+    });
+    this.emit();
+    return this.getState();
+  }
+
+  editIntent(prId: string, intent: DraftEditIntent): PullRequestDetail {
+    this.requirePr(prId);
+    const draft = this.requireDraft(prId, intent.draftId);
+    if (
+      draft.version !== intent.version ||
+      this.db
+        .listSubmissions(prId)
+        .some(
+          (item) =>
+            item.authority?.kind === "automatic" &&
+            item.authority.draftId === draft.id &&
+            item.authority.draftVersion === intent.version,
+        )
+    )
+      throw new ServiceError(
+        409,
+        "draft_conflict",
+        "Draft version changed or automatic publication already started; reload before editing",
+      );
+    if (!draft.autoSubmission?.manualHold) {
+      this.db.updateDraft({
+        ...draft,
+        autoSubmission: {
+          provenance: draft.autoSubmission?.provenance ?? null,
+          manualHold: { reason: "edit_intent", at: now() },
+        },
+      });
+      this.emit(prId);
+    }
+    return this.getDetail(prId);
+  }
+
+  acknowledgeHumanReview(
+    prId: string,
+    acknowledgment: HumanReviewAcknowledgment,
+  ): PullRequestDetail {
+    this.requirePr(prId);
+    const state = this.db.getPublicationState(prId);
+    const evidence = state.evidence.find(
+      (item) =>
+        item.id === acknowledgment.evidenceId &&
+        revision(item.source) === revision(acknowledgment.source),
+    );
+    if (state.version !== acknowledgment.expectedVersion || !evidence)
+      throw new ServiceError(
+        409,
+        "auto_submission_conflict",
+        "Human-review evidence or hold version changed",
+      );
+    if (!evidence.acknowledgment) {
+      evidence.acknowledgment = { action: acknowledgment.action, at: now() };
+      state.version++;
+      this.db.savePublicationState(prId, state);
+      this.emit(prId);
+    }
+    return this.getDetail(prId);
+  }
+
+  async reenableAutoSubmission(
+    prId: string,
+    request: AutoSubmissionReenable,
+  ): Promise<PullRequestDetail> {
+    this.requirePr(prId);
+    const before = this.db.getPublicationState(prId);
+    if (before.version !== request.expectedVersion)
+      throw new ServiceError(
+        409,
+        "auto_submission_conflict",
+        "Hold state changed; reload before re-enabling",
+      );
+    if (request.confirmation !== autoSubmissionReenableConfirmation)
+      throw new ServiceError(
+        400,
+        "invalid_auto_submission",
+        "Explicit future-review re-enable confirmation is required",
+      );
+    await this.scanHumanReview(prId);
+    const state = this.db.getPublicationState(prId);
+    if (state.version !== request.expectedVersion)
+      throw new ServiceError(
+        409,
+        "auto_submission_conflict",
+        "New evidence arrived during the fresh check",
+      );
+    if (
+      state.evidence.some((item) => !item.acknowledgment) ||
+      state.check?.status !== "clear"
+    )
+      throw new ServiceError(
+        409,
+        "auto_submission_held",
+        "A complete clear check and acknowledgment of every request are required",
+      );
+    state.reenableRequired = false;
+    state.generation++;
+    state.version++;
+    this.db.savePublicationState(prId, state);
+    this.emit(prId);
+    return this.getDetail(prId);
+  }
+
+  async checkAutoSubmission(prId: string): Promise<PullRequestDetail> {
+    this.requirePr(prId);
+    await this.reconcileAutomatic(prId);
+    await this.scanHumanReview(prId);
+    return this.getDetail(prId);
+  }
+
+  private automaticProvenance(
+    pr: PullRequest,
+    trigger: ReviewRun["trigger"],
+  ): AutomaticReviewProvenance | null {
+    const policy = this.db.getSettings().autoSubmission!;
+    const author = normalizeGithubUsername(pr.author);
+    const row = policy.authors.find((item) => item.username === author);
+    if (
+      !policy.enabled ||
+      !policy.consentedAt ||
+      policy.repository.toLowerCase() !== pr.repository.toLowerCase() ||
+      !row?.actions.length ||
+      (trigger !== "request" && trigger !== "new_commits")
+    )
+      return null;
+    return {
+      repository: policy.repository,
+      policyVersion: policy.version,
+      consentedAt: policy.consentedAt,
+      author: row.username,
+      actions: [...row.actions],
+      trigger,
+      prGeneration: this.db.getPublicationState(pr.id).generation,
+    };
+  }
+
+  private automaticEligibility(pr: PullRequest): {
+    status: AutoSubmissionState["status"];
+    message: string;
+  } {
+    const state = this.db.getPublicationState(pr.id);
+    const draft = this.db.latestDraft(pr.id);
+    const policy = this.db.getSettings().autoSubmission!;
+    const submissions = this.db.listSubmissions(pr.id);
+    if (state.evidence.some((item) => !item.acknowledgment))
+      return {
+        status: "human_review_requested",
+        message: "A participant requested human review",
+      };
+    if (state.check?.status === "check_needed")
+      return { status: "check_needed", message: state.check.message };
+    if (submissions.some((item) => item.status === "uncertain"))
+      return {
+        status: "check_needed",
+        message:
+          "An earlier write is uncertain; exact reconciliation is required",
+      };
+    if (submissions.some((item) => item.status === "submitting"))
+      return { status: "held", message: "A submission is already in flight" };
+    if (state.reenableRequired)
+      return {
+        status: "held",
+        message:
+          "Acknowledge evidence and explicitly re-enable for future reviews",
+      };
+    if (
+      !policy.enabled ||
+      policy.repository.toLowerCase() !== pr.repository.toLowerCase() ||
+      policy.repository.toLowerCase() !==
+        this.db.getSettings().repository.toLowerCase()
+    )
+      return {
+        status: "off",
+        message: "Automatic submission is off for this repository",
+      };
+    const row = policy.authors.find(
+      (item) => item.username === normalizeGithubUsername(pr.author),
+    );
+    if (!row?.actions.length)
+      return {
+        status: "not_authorized",
+        message: "No automatic verdict permissions for this PR author",
+      };
+    const provenance = draft?.autoSubmission?.provenance;
+    const run = draft?.runId ? this.db.getRun(draft.runId) : null;
+    if (
+      !draft ||
+      !provenance ||
+      draft.autoSubmission?.manualHold ||
+      draft.version !== 1 ||
+      !run ||
+      run.kind !== "review" ||
+      run.status !== "completed" ||
+      !run.result ||
+      !run.autoSubmission ||
+      revision(provenance) !== revision(run.autoSubmission) ||
+      provenance.repository.toLowerCase() !== policy.repository.toLowerCase() ||
+      provenance.policyVersion !== policy.version ||
+      provenance.consentedAt !== policy.consentedAt ||
+      provenance.prGeneration !== state.generation ||
+      provenance.author !== normalizeGithubUsername(pr.author) ||
+      !provenance.actions.includes(draft.verdict) ||
+      !row.actions.includes(draft.verdict)
+    )
+      return {
+        status: "manual_only",
+        message:
+          "Only untouched future automatic full-review drafts with current consent qualify",
+      };
+    if (
+      revision({
+        overview: draft.overview,
+        body: draft.body,
+        findings: draft.findings,
+        verdict: draft.verdict,
+      }) !==
+      revision({
+        overview: run.result.overview,
+        body: run.result.body,
+        findings: run.result.findings,
+        verdict: run.result.verdict,
+      })
+    )
+      return {
+        status: "manual_only",
+        message: "Generated review payload changed",
+      };
+    if (
+      pr.state !== "OPEN" ||
+      draft.headSha !== pr.headSha ||
+      run.headSha !== pr.headSha
+    )
+      return {
+        status: "manual_only",
+        message:
+          "A successful automatic review of the current open head is required",
+      };
+    if (
+      draft.verdict === "COMMENT" &&
+      run.result.findings.some((item) => item.severity === "blocking")
+    )
+      return {
+        status: "not_authorized",
+        message:
+          "COMMENT permission cannot publish a review containing blocking findings",
+      };
+    if (
+      submissions.some(
+        (item) =>
+          item.status === "submitted" && item.payload.commit_id === pr.headSha,
+      ) ||
+      this.db.automaticHeadClaimed(pr.id, pr.headSha)
+    )
+      return {
+        status: "submitted",
+        message:
+          "This head already has a local submission or durable automatic attempt",
+      };
+    if (
+      this.db
+        .listJobs()
+        .some(
+          (item) =>
+            item.pr_id === pr.id &&
+            (item.status === "queued" || item.status === "running"),
+        )
+    )
+      return {
+        status: "held",
+        message: "Another review or revision is pending",
+      };
+    return {
+      status: "eligible",
+      message:
+        "Current consent matches this untouched automatic draft; fresh publication gates still apply",
+    };
+  }
+
+  private autoSubmissionState(pr: PullRequest): AutoSubmissionState {
+    return {
+      ...this.db.getPublicationState(pr.id),
+      ...this.automaticEligibility(pr),
+      draftId: this.db.latestDraft(pr.id)?.id ?? null,
+    };
+  }
+
+  private pauseAutomatic(prId: string, message: string): void {
+    const state = this.db.getPublicationState(prId);
+    if (!state.reenableRequired) {
+      state.generation++;
+      state.version++;
+    }
+    state.reenableRequired = true;
+    state.check = {
+      status: "check_needed",
+      headSha: this.requirePr(prId).headSha,
+      revision: null,
+      checkedAt: now(),
+      coverage: emptyCoverage(),
+      message,
+      detector: null,
+    };
+    this.db.savePublicationState(prId, state);
+    this.emit(prId);
+  }
+
+  private async scanHumanReview(
+    prId: string,
+    capturedSettings?: ReviewerSettings,
+  ): Promise<void> {
+    const previous = this.scans.get(prId) ?? Promise.resolve();
+    const pending = previous
+      .then(() =>
+        this.closed ? undefined : this.performHumanScan(prId, capturedSettings),
+      )
+      .finally(() => {
+        if (this.scans.get(prId) === pending) this.scans.delete(prId);
+      });
+    this.scans.set(prId, pending);
+    return pending;
+  }
+
+  private async performHumanScan(
+    prId: string,
+    capturedSettings?: ReviewerSettings,
+  ): Promise<void> {
+    const controller = new AbortController();
+    this.reviewAborts.set(`scan:${prId}`, controller);
+    let discussion: Awaited<
+      ReturnType<NonNullable<GithubAdapter["discussion"]>>
+    > | null = null;
+    try {
+      const pr = this.requirePr(prId);
+      const remote = await this.github.getPullRequest(pr.repository, pr.number);
+      controller.signal.throwIfAborted();
+      this.observe(
+        remote,
+        { requestsKnown: false, automatic: false, preserveBaseline: true },
+        prId,
+      );
+      if (!this.github.discussion)
+        throw new Error(
+          "Discussion acquisition is unavailable for this adapter; no clear scan inferred",
+        );
+      discussion = await this.github.discussion(remote.pr);
+      controller.signal.throwIfAborted();
+      if (
+        discussion.prId !== prId ||
+        discussion.headSha !== remote.pr.headSha ||
+        !discussion.coverage.complete
+      )
+        throw new Error(
+          "Discussion acquisition is incomplete or targets another head",
+        );
+      const submissions = this.db
+        .listSubmissions(prId)
+        .filter(
+          (item) =>
+            item.status === "submitted" && item.authority?.kind === "automatic",
+        );
+      for (const submission of submissions) {
+        if (
+          discussion.sources.some(
+            (source) =>
+              source.kind === "inline_comment" &&
+              source.reviewId === submission.githubReviewId,
+          ) &&
+          !this.db.getRecovery(submission.previewId)?.commentIds
+        ) {
+          await this.captureAutomaticCommentIds(prId, submission);
+          controller.signal.throwIfAborted();
+        }
+      }
+      const nativeVersions = discussion.sources.map((item) => ({
+        kind: item.kind,
+        id: item.id,
+        version: item.version,
+        threadId: item.threadId,
+      }));
+      for (const source of discussion.sources) {
+        const automated = submissions.find(
+          (item) =>
+            item.githubReviewId ===
+            (source.kind === "review" ? source.id : source.reviewId),
+        );
+        const recovery = automated
+          ? this.db.getRecovery(automated.previewId)
+          : null;
+        if (
+          automated &&
+          recovery?.writer.toLowerCase() === source.author.toLowerCase() &&
+          (source.kind === "review"
+            ? automated.payload.body === source.body
+            : recovery.commentIds?.includes(source.id) &&
+              automated.payload.comments.some(
+                (item) => item.body === source.body,
+              ))
+        )
+          source.provenance = "app_automatic";
+        source.version = revision({
+          source: source.version,
+          title: remote.pr.title,
+          body: remote.pr.body,
+          context: nativeVersions.filter((item) =>
+            source.threadId
+              ? item.threadId === source.threadId
+              : item.threadId === null,
+          ),
+        });
+      }
+      discussion.revision = revision({
+        head: discussion.headSha,
+        title: remote.pr.title,
+        body: remote.pr.body,
+        sources: discussion.sources,
+        coverage: discussion.coverage,
+      });
+      if (
+        discussion.sources.some(
+          (source) =>
+            source.provenance === "unknown" || source.authorType === "unknown",
+        )
+      )
+        throw new Error(
+          "Discussion attribution is unknown; no clear scan inferred",
+        );
+      const input = {
+        pr: {
+          title: remote.pr.title,
+          body: remote.pr.body,
+          author: remote.pr.author,
+        },
+        discussion,
+      };
+      if (Buffer.byteLength(JSON.stringify(input)) > 200000)
+        throw new Error(
+          "Complete classifier input exceeds its byte limit; no truncated clear scan accepted",
+        );
+      const settings = capturedSettings ?? this.captureReviewer();
+      const cacheKey = revision({
+        input: discussion.revision,
+        reviewer: settings,
+      });
+      const cached = this.classificationCache.get(cacheKey);
+      const result =
+        cached ??
+        (await this.classifier.classify(input, settings, controller.signal));
+      controller.signal.throwIfAborted();
+      const output = validateClassification(input, result.output);
+      if (this.requirePr(prId).headSha !== remote.pr.headSha)
+        throw new Error("PR head changed while discussion was classified");
+      if (this.classificationCache.size >= 100)
+        this.classificationCache.clear();
+      this.classificationCache.set(cacheKey, { ...result, output });
+      const state = this.db.getPublicationState(prId);
+      let changed = false;
+      for (const item of output.results.filter(
+        (item) => item.decision === "requested",
+      )) {
+        if (
+          state.evidence.some(
+            (evidence) => revision(evidence.source) === revision(item.source),
+          )
+        )
+          continue;
+        const source = discussion.sources.find(
+          (source) =>
+            source.kind === item.source.kind && source.id === item.source.id,
+        )!;
+        state.evidence.push({
+          id: id(),
+          source: item.source,
+          author: source.author,
+          quote: item.quote!,
+          url: source.url,
+          detectedAt: now(),
+          acknowledgment: null,
+        });
+        changed = true;
+      }
+      const uncertain = output.results.some(
+        (item) => item.decision === "uncertain",
+      );
+      const held = state.evidence.some((item) => !item.acknowledgment);
+      if ((held || uncertain) && !state.reenableRequired) changed = true;
+      if (changed) {
+        state.version++;
+        state.generation++;
+      }
+      if (held || uncertain) state.reenableRequired = true;
+      state.check = {
+        status: held
+          ? "human_review_requested"
+          : uncertain
+            ? "check_needed"
+            : "clear",
+        headSha: remote.pr.headSha,
+        revision: discussion.revision,
+        checkedAt: now(),
+        coverage: discussion.coverage,
+        message: held
+          ? "A participant requested human review"
+          : uncertain
+            ? "Human-review intent is uncertain; check needed"
+            : "Complete discussion check found no unacknowledged human-review request",
+        detector: result.detector,
+      };
+      this.db.savePublicationState(prId, state);
+      this.emit(prId);
+    } catch (error) {
+      if (!this.closed) {
+        this.pauseAutomatic(
+          prId,
+          error instanceof Error ? error.message : "Human-review check failed",
+        );
+        if (discussion) {
+          const state = this.db.getPublicationState(prId);
+          state.check!.coverage = discussion.coverage;
+          state.check!.revision = discussion.revision;
+          this.db.savePublicationState(prId, state);
+        }
+      }
+    } finally {
+      this.reviewAborts.delete(`scan:${prId}`);
+    }
+  }
+
+  private async captureAutomaticCommentIds(
+    prId: string,
+    submission: Submission,
+  ): Promise<void> {
+    const recovery = this.db.getRecovery(submission.previewId);
+    if (!recovery || !this.github.reviewInventory)
+      throw new Error("Exact automated inline provenance is unavailable");
+    const inventory = await this.github.reviewInventory({
+      ...this.requirePr(prId),
+      headSha: submission.payload.commit_id,
+    });
+    const review = inventory.reviews.find(
+      (item) =>
+        item.id === submission.githubReviewId &&
+        inventory.writer.toLowerCase() === recovery.writer.toLowerCase() &&
+        item.author.toLowerCase() === recovery.writer.toLowerCase() &&
+        sameReviewPayload(item.payload, submission.payload),
+    );
+    if (!review)
+      throw new Error(
+        "Exact automated inline provenance could not be confirmed",
+      );
+    if (!this.closed)
+      this.db.saveRecovery(submission.previewId, {
+        ...recovery,
+        commentIds: review.commentIds,
+      });
+  }
+
+  private async reconcileAutomatic(prId: string): Promise<void> {
+    for (const submission of this.db
+      .listSubmissions(prId)
+      .filter(
+        (item) =>
+          item.authority?.kind === "automatic" && item.status === "uncertain",
+      )) {
+      const recovery = this.db.getRecovery(submission.previewId);
+      if (!recovery || !this.github.reviewInventory) continue;
+      try {
+        const inventory = await this.github.reviewInventory({
+          ...this.requirePr(prId),
+          headSha: submission.payload.commit_id,
+        });
+        const match = exactReview(inventory, recovery, submission.payload);
+        if (
+          match &&
+          this.db.getSubmission(submission.id)?.status === "uncertain"
+        ) {
+          this.db.saveRecovery(submission.previewId, {
+            ...recovery,
+            commentIds: match.commentIds,
+          });
+          this.db.updateSubmission({
+            ...submission,
+            status: "submitted",
+            githubReviewId: match.id,
+            url: match.url,
+            error: null,
+          });
+          this.reconcileSubmitted(prId);
+          this.emit(prId);
+        }
+      } catch {
+        this.pauseAutomatic(
+          prId,
+          "Exact complete remote reconciliation is unavailable; no retry permitted",
+        );
+      }
+    }
+  }
+
+  private async automaticSubmission(prId: string): Promise<void> {
+    try {
+      if (
+        this.closed ||
+        this.automaticEligibility(this.requirePr(prId)).status !== "eligible"
+      )
+        return;
+      const draft = this.db.latestDraft(prId)!;
+      const provenance = draft.autoSubmission!.provenance!;
+      if (!this.github.reviewInventory)
+        throw new Error(
+          "Complete review/inline evidence is unavailable for automatic publication",
+        );
+      const inventory: ReviewInventory = await this.github.reviewInventory(
+        this.requirePr(prId),
+      );
+      if (
+        this.automaticEligibility(this.requirePr(prId)).status !== "eligible" ||
+        this.db.latestDraft(prId)?.id !== draft.id
+      )
+        return;
+      await this.scanHumanReview(prId, this.db.getRun(draft.runId!)!.reviewer);
+      if (
+        this.automaticEligibility(this.requirePr(prId)).status !== "eligible" ||
+        this.db.latestDraft(prId)?.id !== draft.id
+      )
+        return;
+      const scanned = this.requirePr(prId);
+      const remote = await this.github.getPullRequest(
+        provenance.repository,
+        scanned.number,
+      );
+      if (
+        remote.pr.title !== scanned.title ||
+        remote.pr.body !== scanned.body ||
+        remote.pr.author !== scanned.author
+      )
+        throw new Error(
+          "PR context changed after classification; a fresh check is required",
+        );
+      this.observe(
+        remote,
+        { requestsKnown: false, automatic: false, preserveBaseline: true },
+        prId,
+      );
+      const current = this.requirePr(prId);
+      const state = this.db.getPublicationState(prId);
+      if (
+        this.closed ||
+        this.automaticEligibility(current).status !== "eligible" ||
+        this.db.latestDraft(prId)?.id !== draft.id ||
+        state.check?.headSha !== current.headSha ||
+        state.check.status !== "clear" ||
+        !state.check.revision
+      )
+        return;
+      const preview = this.createPreview(
+        current,
+        this.requireDraft(prId, draft.id),
+        remote.diff,
+        {
+          kind: "automatic",
+          repository: provenance.repository,
+          policyVersion: provenance.policyVersion,
+          prGeneration: provenance.prGeneration,
+          runId: draft.runId!,
+          draftId: draft.id,
+          draftVersion: draft.version,
+          headSha: draft.headSha,
+          discussionRevision: state.check.revision,
+        },
+      );
+      const submission: Submission = {
+        id: id(),
+        authority: preview.authority,
+        previewId: preview.id,
+        status: "submitting",
+        payload: preview.payload,
+        githubReviewId: null,
+        url: null,
+        error: null,
+        createdAt: now(),
+      };
+      this.db.transaction(() => {
+        if (
+          this.automaticEligibility(this.requirePr(prId)).status !== "eligible"
+        )
+          throw new Error("Automatic authority was revoked before dispatch");
+        this.db.saveRecovery(preview.id, {
+          writer: inventory.writer,
+          reviewIds: inventory.reviewIds,
+          capturedAt: submission.createdAt,
+        });
+        this.db.claimAutomaticHead(prId, current.headSha, submission.id);
+        this.db.createSubmission(submission, prId);
+      });
+      this.emit(prId);
+      try {
+        const result = await this.github.submitReview(current, preview.payload);
+        this.db.updateSubmission({
+          ...submission,
+          status: "submitted",
+          githubReviewId: result.githubReviewId,
+          url: result.url,
+        });
+        this.reconcileSubmitted(prId);
+      } catch {
+        this.db.updateSubmission({
+          ...submission,
+          status: "uncertain",
+          error:
+            "Automatic write outcome is uncertain; exact complete reconciliation required, never retried",
+        });
+        this.pauseAutomatic(
+          prId,
+          "Automatic write outcome is uncertain; exact reconciliation required",
+        );
+      }
+      if (
+        preview.payload.comments.length &&
+        this.db.getSubmission(submission.id)?.status === "submitted"
+      ) {
+        try {
+          await this.captureAutomaticCommentIds(
+            prId,
+            this.db.getSubmission(submission.id)!,
+          );
+        } catch {
+          if (!this.closed)
+            this.pauseAutomatic(
+              prId,
+              "Confirmed write has unverified automated inline provenance; check needed",
+            );
+        }
+      }
+      this.emit(prId);
+    } catch (error) {
+      if (!this.closed)
+        this.pauseAutomatic(
+          prId,
+          error instanceof Error
+            ? error.message
+            : "Automatic submission checks failed",
+        );
+    }
   }
 
   updateSettings(update: SettingsUpdate): AppState {
@@ -1336,6 +2178,8 @@ export class ReviewService {
         if (settings.automation.pollCommits)
           await this.recordFreshness(pr.id, false);
         await this.recordMergeReadiness(pr.id);
+        if (automaticallyReviewed(this.requirePr(pr.id)))
+          await this.scanHumanReview(pr.id);
       }
       for (const request of result.requests) this.observeRequest(request);
       for (const remote of result.pullRequests)
@@ -1583,8 +2427,13 @@ export class ReviewService {
         "invalid_finding",
         "finding ids must be unique",
       );
+    this.editIntent(prId, { draftId: current.id, version: update.version });
     const draft: ReviewDraft = {
       ...current,
+      autoSubmission: {
+        provenance: current.autoSubmission?.provenance ?? null,
+        manualHold: { reason: "saved_edit", at: now() },
+      },
       version: current.version + 1,
       body: update.body,
       findings,
@@ -1733,6 +2582,11 @@ export class ReviewService {
       verdict: result.verdict,
       updatedAt: now(),
     };
+    this.editIntent(prId, { draftId: draft.id, version: draft.version });
+    next.autoSubmission = {
+      provenance: draft.autoSubmission?.provenance ?? null,
+      manualHold: { reason: "revision", at: now() },
+    };
     this.db.updateDraft(next);
     this.db.setProposalStatus(proposalId, "accepted");
     if (this.db.latestDraft(prId)?.id === next.id) this.syncDraftState(prId);
@@ -1786,7 +2640,23 @@ export class ReviewService {
         "stale_draft",
         "draft is for an outdated commit",
       );
-    const anchors = diffAnchors(parseDiff(remote.diff));
+    const latest = this.requireDraft(prId, draftId);
+    if (latest.version !== draftVersion)
+      throw new ServiceError(
+        409,
+        "draft_conflict",
+        "draft changed during preview refresh",
+      );
+    return this.createPreview(current, latest, remote.diff);
+  }
+
+  private createPreview(
+    current: PullRequest,
+    draft: ReviewDraft,
+    diff: string,
+    authority: SubmissionPreview["authority"] = { kind: "manual" },
+  ): SubmissionPreview {
+    const anchors = diffAnchors(parseDiff(diff));
     const comments: ReviewPayload["comments"] = [];
     const bodyFindings: Finding[] = [];
     for (const finding of draft.findings.filter((item) => item.included)) {
@@ -1810,14 +2680,15 @@ export class ReviewService {
     };
     const result: SubmissionPreview = {
       id: id(),
-      prId,
+      prId: current.id,
       draftId: draft.id,
-      draftVersion,
+      draftVersion: draft.version,
+      authority,
       payload,
       createdAt: now(),
     };
     this.db.createPreview(result);
-    this.emit(prId);
+    this.emit(current.id);
     return result;
   }
 
@@ -1826,6 +2697,12 @@ export class ReviewService {
     const preview = this.db.getPreview(previewId);
     if (!preview || preview.prId !== prId)
       throw new ServiceError(404, "not_found", "submission preview not found");
+    if (preview.authority?.kind === "automatic")
+      throw new ServiceError(
+        409,
+        "automatic_preview",
+        "Automatic attempts are reconciled through Check, not manual submit",
+      );
     const existing = this.db.getSubmissionForPreview(previewId);
     if (existing?.status === "submitted") return this.getDetail(prId);
     if (existing?.status === "submitting")
@@ -1835,12 +2712,23 @@ export class ReviewService {
         "submission is already in flight",
       );
     if (existing?.status === "uncertain") {
-      const reconciled = await this.github.findReview(pr, preview.payload);
+      const recovery = this.db.getRecovery(previewId);
+      const reconciled =
+        recovery && this.github.reviewInventory
+          ? exactReview(
+              await this.github.reviewInventory({
+                ...pr,
+                headSha: preview.payload.commit_id,
+              }),
+              recovery,
+              preview.payload,
+            )
+          : null;
       if (reconciled) {
         this.db.updateSubmission({
           ...existing,
           status: "submitted",
-          githubReviewId: reconciled.githubReviewId,
+          githubReviewId: reconciled.id,
           url: reconciled.url,
           error: null,
         });
@@ -1851,7 +2739,7 @@ export class ReviewService {
       throw new ServiceError(
         409,
         "submission_ambiguous",
-        "GitHub write outcome is uncertain; no matching review was found, so it was not retried",
+        "GitHub write outcome is uncertain; complete baseline-bound exact review evidence is unavailable or does not uniquely match, so it was not retried",
       );
     }
     const draft = this.requireDraft(prId, preview.draftId);
@@ -1873,7 +2761,41 @@ export class ReviewService {
         "stale_draft",
         "preview is outdated and must be regenerated",
       );
+    const inventory = this.github.reviewInventory
+      ? await this.github.reviewInventory(current)
+      : null;
+    const latest = this.requireDraft(prId, preview.draftId);
+    if (latest.version !== preview.draftVersion)
+      throw new ServiceError(
+        409,
+        "draft_conflict",
+        "Draft changed during submission checks",
+      );
+    if (
+      this.requirePr(prId).state !== "OPEN" ||
+      this.requirePr(prId).headSha !== preview.payload.commit_id
+    )
+      throw new ServiceError(
+        409,
+        "stale_draft",
+        "PR state or head changed during submission checks",
+      );
+    if (this.db.getSubmissionForPreview(previewId)?.status === "submitted")
+      return this.getDetail(prId);
+    if (
+      this.db
+        .listSubmissions(prId)
+        .some(
+          (item) => item.status === "submitting" || item.status === "uncertain",
+        )
+    )
+      throw new ServiceError(
+        409,
+        "submission_in_flight",
+        "Another submission is in flight or uncertain",
+      );
     const submission: Submission = {
+      authority: { kind: "manual" },
       id: id(),
       previewId,
       status: "submitting",
@@ -1883,7 +2805,15 @@ export class ReviewService {
       error: null,
       createdAt: now(),
     };
-    this.db.createSubmission(submission, prId);
+    this.db.transaction(() => {
+      if (inventory)
+        this.db.saveRecovery(previewId, {
+          writer: inventory.writer,
+          reviewIds: inventory.reviewIds,
+          capturedAt: now(),
+        });
+      this.db.createSubmission(submission, prId);
+    });
     this.emit(prId);
     try {
       const result = await this.github.submitReview(current, preview.payload);
@@ -2362,6 +3292,10 @@ export class ReviewService {
           {
             id: id(),
             runId: run.id,
+            autoSubmission: {
+              provenance: run.autoSubmission ?? null,
+              manualHold: null,
+            },
             headSha: run.headSha,
             version: 1,
             overview: result.overview,
@@ -2394,6 +3328,8 @@ export class ReviewService {
       });
       this.syncDraftState(pr.id);
       await this.recordFreshness(pr.id, false);
+      if (job.kind === "review" && run.autoSubmission)
+        await this.automaticSubmission(pr.id);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const interrupted = this.closed;
@@ -2457,6 +3393,7 @@ export class ReviewService {
       prId,
       kind: "review",
       trigger,
+      autoSubmission: this.automaticProvenance(pr, trigger),
       requestEventId,
       status: "queued",
       headSha: pr.headSha,
@@ -2544,7 +3481,7 @@ export class ReviewService {
       remote.diff,
       remote.diffTruncated,
     );
-    if (pr.effectiveAutomation.reviewNewCommits) {
+    if (pr.effectiveAutomation.reviewNewCommits && !options.preserveBaseline) {
       const state = this.db.getAutomationState(id);
       if (state.commitHead !== pr.headSha) {
         this.db.setCommitHead(id, pr.headSha);
@@ -2597,6 +3534,15 @@ export class ReviewService {
     const remote = await this.github.getPullRequest(pr.repository, pr.number);
     this.observe(remote, { requestsKnown: false, automatic }, pr.id);
     await this.recordMergeReadiness(pr.id);
+    if (automaticallyReviewed(this.requirePr(pr.id))) {
+      await this.scanHumanReview(pr.id);
+      const diff = this.db.getDiff(pr.id)!;
+      return {
+        pr: this.requirePr(pr.id),
+        diff: diff.diff,
+        diffTruncated: diff.truncated,
+      };
+    }
     return remote;
   }
 

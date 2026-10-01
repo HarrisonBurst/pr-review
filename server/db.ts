@@ -1,4 +1,13 @@
 import { DatabaseSync } from "node:sqlite";
+import {
+  publicationOff,
+  publicationState,
+  type SubmissionRecovery,
+} from "./publication.js";
+import type {
+  AutoSubmissionPolicy,
+  AutoSubmissionState,
+} from "../shared/contracts.js";
 import { emptyProgress, interruptProgress, pendingEntry } from "./progress.js";
 import {
   defaultIntegrationSettings,
@@ -38,6 +47,7 @@ import {
 } from "../shared/contracts.js";
 
 interface SettingsRow {
+  auto_submission_json: string | null;
   repository: string;
   polling_enabled: number;
   poll_commits: number;
@@ -108,6 +118,7 @@ export interface AutomationState {
 }
 
 interface RunRow {
+  auto_submission_json: string | null;
   id: string;
   pr_id: string;
   kind: ReviewRun["kind"];
@@ -134,6 +145,7 @@ export interface RunSnapshot {
 }
 
 interface DraftRow {
+  auto_submission_json: string | null;
   id: string;
   pr_id: string;
   run_id: string;
@@ -160,6 +172,7 @@ interface ProposalRow {
 }
 
 interface PreviewRow {
+  authority_json: string | null;
   id: string;
   pr_id: string;
   draft_id: string;
@@ -262,7 +275,8 @@ const draftsDdl = `
         findings_json TEXT NOT NULL,
         verdict TEXT NOT NULL,
         created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
+        updated_at TEXT NOT NULL,
+        auto_submission_json TEXT
       );
       CREATE INDEX IF NOT EXISTS drafts_pr_idx ON drafts(pr_id);`;
 const automationColumns = (policy: AutomationPolicy) => [
@@ -483,6 +497,20 @@ export class AppDatabase {
   }
 
   private migrate(): void {
+    for (const [table, column] of [
+      ["settings", "auto_submission_json"],
+      ["prs", "auto_submission_json"],
+      ["runs", "auto_submission_json"],
+      ["drafts", "auto_submission_json"],
+      ["previews", "authority_json"],
+      ["previews", "recovery_json"],
+    ])
+      if (!this.columns(table!).has(column!))
+        this.sqlite.exec(`ALTER TABLE ${table} ADD COLUMN ${column} TEXT`);
+    this.sqlite.exec(`CREATE TABLE IF NOT EXISTS automatic_heads (
+      pr_id TEXT NOT NULL REFERENCES prs(id), head_sha TEXT NOT NULL, submission_id TEXT NOT NULL,
+      PRIMARY KEY (pr_id, head_sha)
+    );`);
     if (!this.columns("settings").has("poll_requests")) {
       this.sqlite.exec(`
         ALTER TABLE settings ADD COLUMN poll_commits INTEGER NOT NULL DEFAULT 0;
@@ -784,6 +812,9 @@ export class AppDatabase {
       .get() as unknown as SettingsRow;
     return {
       repository: row.repository,
+      autoSubmission: row.auto_submission_json
+        ? parsed<AutoSubmissionPolicy>(row.auto_submission_json)
+        : publicationOff(row.repository),
       automation: {
         pollCommits: row.poll_commits === 1,
         reviewNewCommits: row.review_new_commits === 1,
@@ -811,6 +842,22 @@ export class AppDatabase {
   updateSettings(update: SettingsUpdate): AppSettings {
     const current = this.getSettings();
     const automation = { ...current.automation, ...update.automation };
+    if (
+      update.repository !== undefined &&
+      update.repository.toLowerCase() !== current.repository.toLowerCase()
+    ) {
+      for (const pr of this.listPrs()) {
+        if (pr.repository.toLowerCase() !== current.repository.toLowerCase())
+          continue;
+        const state = this.getPublicationState(pr.id);
+        this.savePublicationState(pr.id, {
+          ...state,
+          version: state.version + 1,
+          generation: state.generation + 1,
+        });
+      }
+      this.savePublicationPolicy(publicationOff(update.repository));
+    }
     this.sqlite
       .prepare(
         `UPDATE settings SET repository = ?, polling_enabled = ?, poll_commits = ?, review_new_commits = ?,
@@ -824,6 +871,56 @@ export class AppDatabase {
         update.maxConcurrentReviews ?? current.maxConcurrentReviews,
       );
     return this.getSettings();
+  }
+
+  savePublicationPolicy(policy: AutoSubmissionPolicy): void {
+    this.sqlite
+      .prepare("UPDATE settings SET auto_submission_json = ? WHERE id = 1")
+      .run(json(policy));
+  }
+
+  getPublicationState(prId: string): AutoSubmissionState {
+    const row = this.sqlite
+      .prepare("SELECT auto_submission_json FROM prs WHERE id = ?")
+      .get(prId) as { auto_submission_json: string | null } | undefined;
+    return row?.auto_submission_json
+      ? parsed<AutoSubmissionState>(row.auto_submission_json)
+      : publicationState();
+  }
+
+  savePublicationState(prId: string, state: AutoSubmissionState): void {
+    this.sqlite
+      .prepare("UPDATE prs SET auto_submission_json = ? WHERE id = ?")
+      .run(json(state), prId);
+  }
+
+  claimAutomaticHead(prId: string, head: string, submissionId: string): void {
+    this.sqlite
+      .prepare(
+        "INSERT INTO automatic_heads (pr_id, head_sha, submission_id) VALUES (?, ?, ?)",
+      )
+      .run(prId, head, submissionId);
+  }
+
+  automaticHeadClaimed(prId: string, head: string): boolean {
+    return !!this.sqlite
+      .prepare("SELECT 1 FROM automatic_heads WHERE pr_id = ? AND head_sha = ?")
+      .get(prId, head);
+  }
+
+  saveRecovery(previewId: string, recovery: SubmissionRecovery): void {
+    this.sqlite
+      .prepare("UPDATE previews SET recovery_json = ? WHERE id = ?")
+      .run(json(recovery), previewId);
+  }
+
+  getRecovery(previewId: string): SubmissionRecovery | null {
+    const row = this.sqlite
+      .prepare("SELECT recovery_json FROM previews WHERE id = ?")
+      .get(previewId) as { recovery_json: string | null } | undefined;
+    return row?.recovery_json
+      ? parsed<SubmissionRecovery>(row.recovery_json)
+      : null;
   }
 
   updateHarness(settings: HarnessSettings): void {
@@ -1153,6 +1250,9 @@ export class AppDatabase {
           },
         ),
       );
+    this.sqlite
+      .prepare("UPDATE runs SET auto_submission_json = ? WHERE id = ?")
+      .run(json(run.autoSubmission ?? null), run.id);
   }
 
   getRun(runId: string): ReviewRun | null {
@@ -1258,6 +1358,12 @@ export class AppDatabase {
         draft.createdAt,
         draft.updatedAt,
       );
+    this.sqlite
+      .prepare("UPDATE drafts SET auto_submission_json = ? WHERE id = ?")
+      .run(
+        json(draft.autoSubmission ?? { provenance: null, manualHold: null }),
+        draft.id,
+      );
   }
 
   getDraft(prId: string, draftId: string): ReviewDraft | null {
@@ -1295,6 +1401,12 @@ export class AppDatabase {
         json(draft.findings),
         draft.verdict,
         draft.updatedAt,
+        draft.id,
+      );
+    this.sqlite
+      .prepare("UPDATE drafts SET auto_submission_json = ? WHERE id = ?")
+      .run(
+        json(draft.autoSubmission ?? { provenance: null, manualHold: null }),
         draft.id,
       );
   }
@@ -1357,6 +1469,9 @@ export class AppDatabase {
         json(preview.payload),
         preview.createdAt,
       );
+    this.sqlite
+      .prepare("UPDATE previews SET authority_json = ? WHERE id = ?")
+      .run(json(preview.authority ?? { kind: "manual" }), preview.id);
   }
 
   getPreview(previewId: string): SubmissionPreview | null {
@@ -1369,6 +1484,9 @@ export class AppDatabase {
           prId: row.pr_id,
           draftId: row.draft_id,
           draftVersion: row.draft_version,
+          authority: row.authority_json
+            ? parsed<SubmissionPreview["authority"]>(row.authority_json)
+            : { kind: "manual" },
           payload: parsed<SubmissionPreview["payload"]>(row.payload_json),
           createdAt: row.created_at,
         }
@@ -1483,6 +1601,11 @@ export class AppDatabase {
   }
 
   markInterruptedJobs(): void {
+    this.sqlite
+      .prepare(
+        "UPDATE submissions SET status = 'uncertain', error = 'Backend stopped during a submission; exact reconciliation required' WHERE status = 'submitting'",
+      )
+      .run();
     const timestamp = now();
     this.sqlite
       .prepare(
@@ -1716,6 +1839,9 @@ export class AppDatabase {
 
   private toDraft(row: DraftRow): ReviewDraft {
     return {
+      autoSubmission: row.auto_submission_json
+        ? parsed<ReviewDraft["autoSubmission"]>(row.auto_submission_json)
+        : { provenance: null, manualHold: null },
       id: row.id,
       runId: row.run_id,
       headSha: row.head_sha,
@@ -1770,6 +1896,9 @@ export class AppDatabase {
 
   private toRun(row: RunRow): ReviewRun {
     return {
+      autoSubmission: row.auto_submission_json
+        ? parsed<ReviewRun["autoSubmission"]>(row.auto_submission_json)
+        : null,
       id: row.id,
       prId: row.pr_id,
       kind: row.kind,
@@ -1796,6 +1925,9 @@ export class AppDatabase {
 
   private toSubmission(row: SubmissionRow): Submission {
     return {
+      authority: this.getPreview(row.preview_id)?.authority ?? {
+        kind: "manual",
+      },
       id: row.id,
       previewId: row.preview_id,
       status: row.status,

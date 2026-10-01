@@ -388,6 +388,23 @@ export function createHttpServer(
           return;
         }
         if (
+          request.method === "PATCH" &&
+          parts.length === 2 &&
+          parts[0] === "settings" &&
+          parts[1] === "auto-submission"
+        ) {
+          sendJson(
+            response,
+            200,
+            service.saveAutoSubmission(
+              bodyObject(
+                await readBody(request),
+              ) as unknown as import("../shared/contracts.js").AutoSubmissionUpdate,
+            ),
+          );
+          return;
+        }
+        if (
           request.method === "GET" &&
           parts.length === 2 &&
           parts[0] === "settings" &&
@@ -1072,6 +1089,115 @@ export function createHttpServer(
           ) {
             sendJson(response, 200, await service.checkFreshness(prId));
             return;
+          }
+          if (
+            request.method === "POST" &&
+            parts.length === 4 &&
+            parts[2] === "draft" &&
+            parts[3] === "edit-intent"
+          ) {
+            const body = bodyObject(await readBody(request));
+            if (
+              Object.keys(body).some(
+                (key) => !["draftId", "version"].includes(key),
+              ) ||
+              typeof body.draftId !== "string" ||
+              !Number.isInteger(body.version) ||
+              Number(body.version) < 1
+            )
+              throw new ServiceError(
+                400,
+                "invalid_draft",
+                "Invalid draft edit intent",
+              );
+            sendJson(
+              response,
+              200,
+              service.editIntent(
+                prId,
+                body as unknown as import("../shared/contracts.js").DraftEditIntent,
+              ),
+            );
+            return;
+          }
+          if (
+            request.method === "POST" &&
+            parts.length === 4 &&
+            parts[2] === "auto-submission"
+          ) {
+            const body = bodyObject(await readBody(request));
+            if (parts[3] === "check" && Object.keys(body).length === 0) {
+              sendJson(response, 200, await service.checkAutoSubmission(prId));
+              return;
+            }
+            if (
+              !Number.isInteger(body.expectedVersion) ||
+              Number(body.expectedVersion) < 0
+            )
+              throw new ServiceError(
+                400,
+                "invalid_auto_submission",
+                "Invalid hold version",
+              );
+            if (parts[3] === "acknowledge") {
+              const source = body.source as Record<string, unknown> | null;
+              if (
+                Object.keys(body).some(
+                  (key) =>
+                    ![
+                      "expectedVersion",
+                      "evidenceId",
+                      "source",
+                      "action",
+                    ].includes(key),
+                ) ||
+                typeof body.evidenceId !== "string" ||
+                !["dismiss", "resolve"].includes(String(body.action)) ||
+                !source ||
+                typeof source !== "object" ||
+                Object.keys(source).length !== 3 ||
+                typeof source.id !== "string" ||
+                typeof source.version !== "string" ||
+                !["comment", "review", "inline_comment"].includes(
+                  String(source.kind),
+                )
+              )
+                throw new ServiceError(
+                  400,
+                  "invalid_auto_submission",
+                  "Invalid source acknowledgment",
+                );
+              sendJson(
+                response,
+                200,
+                service.acknowledgeHumanReview(
+                  prId,
+                  body as unknown as import("../shared/contracts.js").HumanReviewAcknowledgment,
+                ),
+              );
+              return;
+            }
+            if (
+              parts[3] === "re-enable" &&
+              Object.keys(body).every((key) =>
+                ["expectedVersion", "confirmation"].includes(key),
+              )
+            ) {
+              sendJson(
+                response,
+                200,
+                await service.reenableAutoSubmission(
+                  prId,
+                  body as unknown as import("../shared/contracts.js").AutoSubmissionReenable,
+                ),
+              );
+              return;
+            }
+            throw new ServiceError(
+              400,
+              "invalid_auto_submission",
+              "Invalid automatic submission action",
+            );
           }
           if (
             request.method === "PUT" &&
