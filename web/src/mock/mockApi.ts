@@ -2674,6 +2674,7 @@ export class MockBackend {
       requested: false,
       requestedAt: null,
       requestSource: null,
+      historicalRequestSource: null,
       imported: true,
       createdAt: this.now(),
       updatedAt: this.now(),

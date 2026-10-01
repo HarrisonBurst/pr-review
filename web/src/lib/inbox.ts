@@ -6,24 +6,24 @@ export const inboxGroups: { key: InboxGroup; title: string; empty: string }[] = 
   {
     key: "direct",
     title: "Requested of you",
-    empty: "No open pull requests are requested of you directly.",
+    empty: "No tracked open pull requests have a known direct review request.",
   },
   {
     key: "team",
     title: "Requested of your teams",
-    empty: "No open pull requests are requested of a team you belong to.",
+    empty: "No tracked open pull requests have a known review request for your teams.",
   },
   {
     key: "other",
     title: "Other tracked PRs",
-    empty: "Open pull requests you import by URL appear here while no review is requested of you.",
+    empty: "Tracked open pull requests with no known personal or team request history appear here.",
   },
 ];
 
 export function groupOf(pr: PullRequest): InboxGroup {
-  if (!pr.requested) return "other";
-  if (pr.requestSource === "direct" || pr.requestSource === "both") return "direct";
-  if (pr.requestSource === "team") return "team";
+  const sources = [pr.historicalRequestSource, pr.requested ? pr.requestSource : null];
+  if (sources.some((source) => source === "direct" || source === "both")) return "direct";
+  if (sources.includes("team")) return "team";
   return "other";
 }
 

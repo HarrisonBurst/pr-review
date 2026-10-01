@@ -861,6 +861,7 @@ export interface PullRequest {
   requested: boolean;
   requestedAt: string | null;
   requestSource: RequestSource | null;
+  historicalRequestSource: Exclude<RequestSource, "unknown"> | null;
   imported: boolean;
   createdAt: string | null;
   updatedAt: string;

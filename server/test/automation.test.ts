@@ -86,6 +86,7 @@ function remote(
     requested: false,
     requestedAt: null,
     requestSource: null,
+    historicalRequestSource: null,
     imported: false,
     createdAt: "2025-12-31T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",

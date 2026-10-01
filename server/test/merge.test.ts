@@ -55,6 +55,7 @@ function pullRequest(headSha = head): PullRequest {
     requested: true,
     requestedAt: "2026-01-01T00:00:00.000Z",
     requestSource: "direct",
+    historicalRequestSource: null,
     imported: false,
     createdAt: "2025-12-31T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",

@@ -4,7 +4,11 @@ import { prs } from "../mock/fixtures";
 import { ageOf, compareInbox, groupOf, settled } from "./inbox";
 
 const base = prs[0]!;
-const pr = (over: Partial<PullRequest>): PullRequest => ({ ...base, ...over });
+const pr = (over: Partial<PullRequest>): PullRequest => ({
+  ...base,
+  historicalRequestSource: null,
+  ...over,
+});
 
 describe("inbox grouping", () => {
   it("assigns direct and both to you, team to teams, and everything else to other", () => {
@@ -13,6 +17,31 @@ describe("inbox grouping", () => {
     expect(groupOf(pr({ requested: true, requestSource: "team" }))).toBe("team");
     expect(groupOf(pr({ requested: true, requestSource: "unknown" }))).toBe("other");
     expect(groupOf(pr({ requested: false, requestSource: null }))).toBe("other");
+  });
+
+  it("keeps known historical groups without a current request, with personal precedence", () => {
+    for (const [source, group] of [
+      ["direct", "direct"],
+      ["team", "team"],
+      ["both", "direct"],
+    ] as const)
+      expect(
+        groupOf(pr({ requested: false, requestSource: null, historicalRequestSource: source })),
+      ).toBe(group);
+    expect(
+      groupOf(pr({ requested: true, requestSource: "team", historicalRequestSource: "direct" })),
+    ).toBe("direct");
+    expect(
+      groupOf(pr({ requested: true, requestSource: "direct", historicalRequestSource: "team" })),
+    ).toBe("direct");
+    expect(
+      groupOf(pr({ requested: true, requestSource: "unknown", historicalRequestSource: "team" })),
+    ).toBe("team");
+    expect(
+      groupOf(
+        pr({ requested: false, requestSource: "direct", hasReviewHistory: true, imported: true }),
+      ),
+    ).toBe("other");
   });
 
   it("ages requested groups by request time and other by creation time", () => {

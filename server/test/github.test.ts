@@ -1124,10 +1124,12 @@ test("manual import records durable provenance that survives refreshes, request 
     assert.deepEqual(inboxNumbers(service), [7, 9]);
     const removed = service.getDetail(eight).pr;
     assert.equal(removed.requested, false);
+    assert.equal(removed.historicalRequestSource, "team");
     assert.equal(removed.imported, false);
     assert.equal(removed.state, "OPEN");
     const kept = service.getDetail(seven).pr;
     assert.equal(kept.requested, false);
+    assert.equal(kept.historicalRequestSource, "direct");
     assert.equal(kept.imported, true);
 
     await gh.respond({
