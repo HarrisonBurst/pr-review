@@ -894,6 +894,7 @@ const basePr = (
   requested: true,
   requestedAt: t(60),
   requestSource: "direct",
+  historicalRequestSource: "direct",
   imported: false,
   createdAt: t(3000),
   updatedAt: t(30),
@@ -938,6 +939,7 @@ export const prs: PullRequest[] = [
     changedFiles: 4,
     requestedAt: t(300),
     requestSource: "team",
+    historicalRequestSource: "team",
     createdAt: t(2000),
     updatedAt: t(5),
     mergeReadiness: readiness("blocked", [
@@ -966,6 +968,7 @@ export const prs: PullRequest[] = [
     lastReviewedAt: t(600),
     requestedAt: t(900),
     requestSource: "both",
+    historicalRequestSource: "both",
     createdAt: t(4000),
     updatedAt: t(40),
     automation: { ...inheritAutomation, reviewRequests: "off" },
@@ -1000,6 +1003,7 @@ export const prs: PullRequest[] = [
     requested: false,
     requestedAt: null,
     requestSource: null,
+    historicalRequestSource: null,
     imported: true,
     mergeReadiness: readiness("unstable", [
       blocker("checks_failed", "1 check failed", {
@@ -1074,6 +1078,7 @@ export const prs: PullRequest[] = [
     changedFiles: 3,
     requestedAt: t(2),
     requestSource: "team",
+    historicalRequestSource: "team",
     createdAt: t(50),
     updatedAt: t(2),
     mergeReadiness: readiness("unknown", [], {
@@ -1092,6 +1097,7 @@ export const prs: PullRequest[] = [
     changedFiles: 1,
     requestedAt: null,
     requestSource: "unknown",
+    historicalRequestSource: null,
     createdAt: null,
     updatedAt: t(9000),
   }),

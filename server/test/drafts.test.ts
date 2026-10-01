@@ -70,6 +70,7 @@ function remote(headSha = "sha-1"): RemotePullRequest {
     requested: true,
     requestedAt: "2026-01-01T00:00:00.000Z",
     requestSource: "direct",
+    historicalRequestSource: null,
     imported: false,
     createdAt: "2025-12-31T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",
@@ -219,8 +220,10 @@ async function reviewed(
   github: FakeGithub,
   reviewer: FakeReviewer,
   headSha: string,
+  requestSource: PullRequest["requestSource"] = "direct",
 ) {
   github.current = remote(headSha);
+  github.current.pr.requestSource = requestSource;
   const before = reviewer.count;
   await service.manualReview(PR);
   await waitFor(
@@ -1253,82 +1256,294 @@ test("revisions and proposals stay bound to their draft and version", async () =
   }
 });
 
-for (const submitted of [false, true]) {
-  test(`open reviewed PR remains tracked after request removal, submitted=${submitted}`, async () => {
-    const fixture = await makeService();
-    const { github, reviewer, config, dataDir } = fixture;
-    let service = fixture.service;
-    try {
+test("observed request provenance accumulates without trusting incoming historical fields", async () => {
+  const { service, github, cleanup } = await makeService();
+  try {
+    github.current.pr.requested = false;
+    github.current.pr.requestSource = null;
+    github.current.pr.historicalRequestSource = "both";
+    await service.importPullRequest(github.current.pr.url);
+    assert.equal(service.getDetail(PR).pr.historicalRequestSource, null);
+    for (const [source, expected] of [
+      ["team", "team"],
+      ["direct", "both"],
+      ["unknown", "both"],
+      [null, "both"],
+      ["team", "both"],
+    ] as const) {
+      github.current.pr.requested = source !== null;
+      github.current.pr.requestSource = source;
       await service.sync();
-      const draft = (await reviewed(service, github, reviewer, "sha-1")).draft!;
-      const edited = service.updateDraft(PR, {
-        draftId: draft.id,
-        version: draft.version,
-        body: "Manually preserved fixture text",
-        findings: draft.findings,
-        verdict: draft.verdict,
-      }).draft!;
-      if (submitted) {
-        const preview = await service.preview(PR, edited.id, edited.version);
-        await service.submit(PR, preview.id);
-      }
-      github.current.pr.requested = false;
-      github.current.pr.requestedAt = null;
-      github.current.pr.requestSource = null;
-      await service.sync();
-      assert.equal(service.getState().prs[0]?.hasReviewHistory, true);
-      assert.equal(service.getState().prs[0]?.imported, false);
-      assert.equal(service.getState().prs[0]?.requestSource, null);
-      const history = service.getDetail(PR);
-      await service.close();
-      service = await ReviewService.create(config, github, reviewer);
-      assert.equal(service.getState().prs[0]?.id, PR);
-      for (const polling of ["pollCommits", "pollRequests"] as const) {
-        service.db.updateSettings({
-          automation: { ...automationOff, [polling]: true },
+      assert.equal(service.getDetail(PR).pr.requestSource, source);
+      assert.equal(service.getDetail(PR).pr.historicalRequestSource, expected);
+      assert.equal(service.getState().prs.length, 1);
+    }
+    service.db.clearPrRequest(PR);
+    assert.equal(service.getDetail(PR).pr.requestSource, null);
+    assert.equal(service.getDetail(PR).pr.historicalRequestSource, "both");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("historical provenance migration uses only typed request evidence, including old-head snapshots", async () => {
+  const fixture = await makeService();
+  const { service, config, dataDir } = fixture;
+  const cases: Array<{
+    pr?: Partial<PullRequest>;
+    captures?: Partial<PullRequest>[];
+    completed?: boolean;
+    event?: boolean;
+    expected: PullRequest["historicalRequestSource"];
+  }> = [
+    { pr: { requested: true, requestSource: "direct" }, expected: "direct" },
+    { pr: { requested: true, requestSource: "team" }, expected: "team" },
+    { pr: { requested: true, requestSource: "both" }, expected: "both" },
+    { pr: { requested: true, requestSource: "unknown" }, expected: null },
+    { pr: { requestSource: "direct" }, expected: null },
+    {
+      captures: [{ requested: true, requestSource: "team" }],
+      expected: "team",
+    },
+    {
+      captures: [{ requested: true, requestSource: "direct" }],
+      expected: "direct",
+    },
+    {
+      captures: [
+        { requested: true, requestSource: "team" },
+        { requested: true, requestSource: "direct" },
+      ],
+      expected: "both",
+    },
+    {
+      pr: { requested: true, requestSource: "team" },
+      captures: [{ requested: true, requestSource: "direct" }],
+      expected: "both",
+    },
+    {
+      pr: { state: "MERGED" },
+      captures: [{ requested: true, requestSource: "both" }],
+      expected: "both",
+    },
+    {
+      captures: [
+        {
+          requested: false,
+          requestSource: "direct",
+          historicalRequestSource: "both",
+        },
+      ],
+      expected: null,
+    },
+    {
+      captures: [{ requested: true, requestSource: "unknown" }],
+      expected: null,
+    },
+    {
+      captures: [{ requested: true, requestSource: undefined }],
+      expected: null,
+    },
+    { completed: true, expected: null },
+    { pr: { imported: true }, expected: null },
+    { event: true, expected: null },
+  ];
+  let db: AppDatabase | null = null;
+  try {
+    for (const [index, scenario] of cases.entries()) {
+      const item = remote("current-head");
+      Object.assign(
+        item.pr,
+        {
+          id: `owner/repo#${index + 1}`,
+          number: index + 1,
+          requested: false,
+          requestSource: null,
+        },
+        scenario.pr,
+      );
+      service.db.upsertPr(item.pr, item.diff, false);
+      if (scenario.pr?.imported) service.db.markImported(item.pr.id);
+      if (scenario.event)
+        service.db.insertRequestEvent(
+          `event-${index}`,
+          item.pr.id,
+          "old-head",
+          "2026-01-01T00:00:00.000Z",
+        );
+      if (scenario.completed)
+        service.db.createRun(
+          completedRun({ id: `completed-${index}`, prId: item.pr.id }),
+        );
+      for (const [captureIndex, capture] of (
+        scenario.captures ?? []
+      ).entries()) {
+        const run = completedRun({
+          id: `capture-${index}-${captureIndex}`,
+          prId: item.pr.id,
+          status: "failed",
+          result: null,
+          headSha: "old-head",
         });
-        await service.sync("scheduled");
+        service.db.createRun(run);
+        service.db.createRunSnapshot(run.id, {
+          pr: { ...item.pr, headSha: "old-head", ...capture },
+          diff: item.diff,
+          diffTruncated: false,
+        });
+      }
+    }
+    const snapshots = service.db.sqlite
+      .prepare("SELECT * FROM run_snapshots ORDER BY run_id")
+      .all();
+    await service.close();
+    const legacy = new DatabaseSync(config.databasePath);
+    legacy.exec("ALTER TABLE prs DROP COLUMN historical_request_source");
+    legacy.close();
+    for (let restart = 0; restart < 2; restart++) {
+      db = await AppDatabase.open(config.databasePath);
+      for (const [index, scenario] of cases.entries()) {
+        const pr: PullRequest = db.getPr(`owner/repo#${index + 1}`)!;
+        assert.equal(
+          pr.historicalRequestSource,
+          scenario.expected,
+          `case ${index}, restart ${restart}`,
+        );
+        assert.equal(pr.headSha, "current-head");
+      }
+      assert.deepEqual(
+        db.sqlite.prepare("SELECT * FROM run_snapshots ORDER BY run_id").all(),
+        snapshots,
+      );
+      assert.deepEqual(db.getSettings().automation, automationOff);
+      assert.equal(db.listJobs().length, 0);
+      db.close();
+      db = null;
+    }
+  } finally {
+    db?.close();
+    if (service.db.sqlite.isOpen) await service.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+for (const requestSource of ["direct", "team", "both"] as const) {
+  for (const submitted of [false, true]) {
+    test(`open reviewed PR keeps ${requestSource} history after request removal, submitted=${submitted}`, async () => {
+      const fixture = await makeService();
+      const { github, reviewer, config, dataDir } = fixture;
+      let service = fixture.service;
+      try {
+        github.current.pr.requestSource = requestSource;
+        await service.sync();
+        const draft = (
+          await reviewed(service, github, reviewer, "sha-1", requestSource)
+        ).draft!;
+        const edited = service.updateDraft(PR, {
+          draftId: draft.id,
+          version: draft.version,
+          body: "Manually preserved fixture text",
+          findings: draft.findings,
+          verdict: draft.verdict,
+        }).draft!;
+        if (submitted) {
+          const preview = await service.preview(PR, edited.id, edited.version);
+          await service.submit(PR, preview.id);
+        }
+        github.current.pr.requested = false;
+        github.current.pr.requestedAt = null;
+        github.current.pr.requestSource = null;
+        await service.sync();
+        assert.equal(service.getState().prs[0]?.hasReviewHistory, true);
+        assert.equal(service.getState().prs[0]?.imported, false);
+        assert.equal(service.getState().prs[0]?.requestSource, null);
+        assert.equal(
+          service.getState().prs[0]?.historicalRequestSource,
+          requestSource,
+        );
+        const history = service.getDetail(PR);
+        await service.close();
+        service = await ReviewService.create(config, github, reviewer);
+        assert.equal(service.getState().prs[0]?.id, PR);
+        assert.equal(
+          service.getState().prs[0]?.historicalRequestSource,
+          requestSource,
+        );
+        for (const polling of ["pollCommits", "pollRequests"] as const) {
+          service.db.updateSettings({
+            automation: { ...automationOff, [polling]: true },
+          });
+          await service.sync("scheduled");
+          assert.deepEqual(
+            github.tracked.map((pr) => pr.id),
+            [PR],
+          );
+        }
+        service.db.updateSettings({ automation: automationOff });
+        github.current.pr.headSha = "new-head";
+        await service.sync();
         assert.deepEqual(
           github.tracked.map((pr) => pr.id),
           [PR],
         );
-      }
-      service.db.updateSettings({ automation: automationOff });
-      github.current.pr.headSha = "new-head";
-      await service.sync();
-      assert.deepEqual(
-        github.tracked.map((pr) => pr.id),
-        [PR],
-      );
-      assert.equal(service.getState().prs[0]?.hasReviewedHead, false);
-      assert.equal(service.getState().prs[0]?.hasReviewHistory, true);
-      assert.equal(service.getState().prs[0]?.status, "outdated");
-      for (const state of ["CLOSED", "MERGED"] as const) {
-        service.db.upsertPr(
-          { ...github.current.pr, state: "OPEN" },
-          github.current.diff,
-          false,
+        assert.equal(service.getState().prs[0]?.hasReviewedHead, false);
+        assert.equal(service.getState().prs[0]?.hasReviewHistory, true);
+        assert.equal(service.getState().prs[0]?.status, "outdated");
+        assert.equal(
+          service.getState().prs[0]?.historicalRequestSource,
+          requestSource,
         );
-        github.current.pr.state = state;
-        await service.sync();
-        assert.equal(service.getState().prs.length, 0);
-        const detail = service.getDetail(PR);
-        assert.deepEqual(detail.drafts, history.drafts);
-        assert.deepEqual(detail.runs, history.runs);
-        assert.deepEqual(detail.submissions, history.submissions);
+        for (const state of ["CLOSED", "MERGED"] as const) {
+          service.db.upsertPr(
+            { ...github.current.pr, state: "OPEN" },
+            github.current.diff,
+            false,
+          );
+          github.current.pr.state = state;
+          await service.sync();
+          assert.equal(service.getState().prs.length, 0);
+          const detail = service.getDetail(PR);
+          assert.equal(detail.pr.historicalRequestSource, requestSource);
+          assert.deepEqual(detail.drafts, history.drafts);
+          assert.deepEqual(detail.runs, history.runs);
+          assert.deepEqual(detail.submissions, history.submissions);
+        }
+        assert.equal(reviewer.count, 1);
+        github.current.pr.state = "OPEN";
+        await service.checkFreshness(PR);
+        assert.equal(
+          service.getState().prs[0]?.historicalRequestSource,
+          requestSource,
+        );
+        await service.manualReview(PR);
+        await waitFor(
+          () => service.getDetail(PR).runs[0]?.status === "completed",
+        );
+        assert.equal(service.getState().prs[0]?.hasReviewedHead, true);
+        assert.equal(
+          service.getState().prs[0]?.historicalRequestSource,
+          requestSource,
+        );
+        assert.deepEqual(
+          service.getDetail(PR).drafts.find((draft) => draft.id === edited.id),
+          edited,
+        );
+        assert.equal(reviewer.count, 2);
+        assert.deepEqual(service.db.getSettings().automation, automationOff);
+      } finally {
+        await service.close();
+        await rm(dataDir, { recursive: true, force: true });
       }
-      assert.equal(reviewer.count, 1);
-      assert.deepEqual(service.db.getSettings().automation, automationOff);
-    } finally {
-      await service.close();
-      await rm(dataDir, { recursive: true, force: true });
-    }
-  });
+    });
+  }
 }
 
-test("a confirmed local-draft submission retains an open PR without any full review", async () => {
+test("a confirmed local-draft submission retains an open PR without inventing request provenance", async () => {
   const { service, github, cleanup } = await makeService();
   try {
+    github.current.pr.requested = false;
+    github.current.pr.requestSource = null;
+    github.current.pr.requestedAt = null;
     await service.sync();
     const draft = service.createManualDraft(PR).draft!;
     const edited = service.updateDraft(PR, {
@@ -1344,6 +1559,7 @@ test("a confirmed local-draft submission retains an open PR without any full rev
     await service.sync();
     assert.equal(service.getState().prs[0]?.hasReviewHistory, true);
     assert.equal(service.getState().prs[0]?.hasReviewedHead, false);
+    assert.equal(service.getState().prs[0]?.historicalRequestSource, null);
     assert.equal(service.getDetail(PR).runs.length, 0);
   } finally {
     await cleanup();
