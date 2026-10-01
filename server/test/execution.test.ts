@@ -518,6 +518,8 @@ for (const [mode, harness] of [
         HOME: fixture.root,
         PATH: `${bin}:${process.env.PATH}`,
         PR_REVIEW_FIXTURE_SOURCE: path.join(fixture.source, "checkout"),
+        GIT_SSH_COMMAND: path.join(bin, "ssh"),
+        GIT_SSH_VARIANT: "ssh",
       });
       const git = async (...args: string[]) => {
         const result = await runCommand("git", args, {
@@ -566,9 +568,15 @@ for (const [mode, harness] of [
       );
       await writeFile(
         path.join(bin, "gh"),
-        '#!/bin/sh\n[ "$1 $2 $3" = "repo clone demo/repository" ] || exit 1\nexec /usr/bin/git clone --no-local --no-checkout -- "$PR_REVIEW_FIXTURE_SOURCE" "$4"\n',
+        '#!/bin/sh\n[ "$1 $2 $3" = "repo clone demo/repository" ] || exit 1\n/usr/bin/git clone --no-local --no-checkout -- "$PR_REVIEW_FIXTURE_SOURCE" "$4" || exit $?\nexec /usr/bin/git -C "$4" config remote.origin.url git@github.com:demo/repository.git\n',
       );
-      await chmod(path.join(bin, "gh"), 0o700);
+      await writeFile(
+        path.join(bin, "ssh"),
+        '#!/bin/sh\nexec /usr/bin/git upload-pack "$PR_REVIEW_FIXTURE_SOURCE"\n',
+      );
+      await Promise.all(
+        ["gh", "ssh"].map((name) => chmod(path.join(bin, name), 0o700)),
+      );
       const github = new DemoGithubAdapter();
       const item = await github.getPullRequest("demo/repository", 42);
       Object.assign(item.pr, { headSha, baseSha });

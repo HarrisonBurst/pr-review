@@ -27,6 +27,8 @@ export async function gitWorkcopyFixture(large = false) {
     HOME: root,
     PATH: `${bin}:/usr/bin:/bin`,
     FIXTURE_REPOSITORY: repository,
+    GIT_SSH_COMMAND: path.join(bin, "ssh"),
+    GIT_SSH_VARIANT: "ssh",
     GIT_AUTHOR_NAME: "Synthetic fixture",
     GIT_AUTHOR_EMAIL: "fixture@example.invalid",
     GIT_COMMITTER_NAME: "Synthetic fixture",
@@ -48,9 +50,15 @@ export async function gitWorkcopyFixture(large = false) {
   try {
     await writeFile(
       path.join(bin, "gh"),
-      '#!/bin/sh\n[ "$1 $2 $3" = "repo clone fixture/offline" ] || exit 1\ndestination="$4"\nshift 5\nexec /usr/bin/git clone --no-local "$@" -- "$FIXTURE_REPOSITORY" "$destination"\n',
+      '#!/bin/sh\n[ "$1 $2 $3" = "repo clone fixture/offline" ] || exit 1\ndestination="$4"\nshift 5\n/usr/bin/git clone --no-local "$@" -- "$FIXTURE_REPOSITORY" "$destination" || exit $?\nexec /usr/bin/git -C "$destination" config remote.origin.url git@github.com:fixture/offline.git\n',
     );
-    await chmod(path.join(bin, "gh"), 0o700);
+    await writeFile(
+      path.join(bin, "ssh"),
+      '#!/bin/sh\nexec /usr/bin/git upload-pack "$FIXTURE_REPOSITORY"\n',
+    );
+    await Promise.all(
+      ["gh", "ssh"].map((name) => chmod(path.join(bin, name), 0o700)),
+    );
     await upstream("init", "--initial-branch=main");
     if (large) {
       const file = await open(path.join(repository, "history.bin"), "w");

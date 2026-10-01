@@ -159,7 +159,7 @@ export async function oauthFixture(
   );
   await script(
     "git",
-    'const args=process.argv.slice(2); if(args[0]==="rev-parse") process.stdout.write(args.at(-1)==="HEAD" ? "demo-head-sha-1" : args.at(-1).replace("^{commit}",""));',
+    'const args=process.argv.slice(2); if(args[0]==="config") process.stdout.write(args.at(-1)==="remote.origin.url" ? "git@github.com:demo/repository.git" : "core.bare"); if(args[0]==="rev-parse") process.stdout.write(args.at(-1)==="HEAD" ? "demo-head-sha-1" : args.at(-1).replace("^{commit}",""));',
   );
   const harness = await readFile(
     new URL("isolated-harness.cjs", import.meta.url),
