@@ -1,4 +1,9 @@
-export type ReviewVerdict = "COMMENT" | "APPROVE" | "REQUEST_CHANGES";
+export const reviewVerdicts = [
+  "COMMENT",
+  "APPROVE",
+  "REQUEST_CHANGES",
+] as const;
+export type ReviewVerdict = (typeof reviewVerdicts)[number];
 export type Severity = "blocking" | "non_blocking";
 export type RunStatus =
   "queued" | "running" | "completed" | "failed" | "interrupted";
@@ -762,7 +767,230 @@ export function validConcurrentReviews(value: unknown): value is number {
   );
 }
 
+export const autoSubmissionConfirmation =
+  "Automatically publish untouched future automatic full-review drafts using these repository author/action permissions";
+export const autoSubmissionReenableConfirmation =
+  "Re-enable automatic submission for future automatic full reviews of this pull request";
+
+export interface AutoSubmissionAuthor {
+  username: string;
+  actions: ReviewVerdict[];
+}
+
+export interface AutoSubmissionPolicy {
+  repository: string;
+  enabled: boolean;
+  authors: AutoSubmissionAuthor[];
+  version: number;
+  consentedAt: string | null;
+}
+
+export interface AutoSubmissionUpdate {
+  repository: string;
+  expectedVersion: number;
+  enabled: boolean;
+  authors: AutoSubmissionAuthor[];
+  confirmation?: typeof autoSubmissionConfirmation;
+}
+
+export function normalizeGithubUsername(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const username = value.trim().toLowerCase();
+  return /^[a-z\d](?:[a-z\d]|-(?=[a-z\d])){0,38}$/.test(username)
+    ? username
+    : null;
+}
+
+export function normalizeAutoSubmissionAuthors(
+  value: unknown,
+): AutoSubmissionAuthor[] | null {
+  if (!Array.isArray(value) || value.length > 100) return null;
+  const authors: AutoSubmissionAuthor[] = [];
+  const usernames = new Set<string>();
+  for (const row of value) {
+    if (
+      !row ||
+      typeof row !== "object" ||
+      Array.isArray(row) ||
+      Object.keys(row).some((key) => !["username", "actions"].includes(key))
+    )
+      return null;
+    const username = normalizeGithubUsername(row.username);
+    if (
+      !username ||
+      usernames.has(username) ||
+      !Array.isArray(row.actions) ||
+      row.actions.some(
+        (action: unknown) => !reviewVerdicts.includes(action as ReviewVerdict),
+      ) ||
+      new Set(row.actions).size !== row.actions.length
+    )
+      return null;
+    usernames.add(username);
+    authors.push({
+      username,
+      actions: reviewVerdicts.filter((action) => row.actions.includes(action)),
+    });
+  }
+  return authors;
+}
+
+export interface AutomaticReviewProvenance {
+  repository: string;
+  policyVersion: number;
+  consentedAt: string;
+  author: string;
+  actions: ReviewVerdict[];
+  trigger: "request" | "new_commits";
+  prGeneration: number;
+}
+
+export interface DiscussionSourceVersion {
+  kind: "comment" | "review" | "inline_comment";
+  id: string;
+  version: string;
+}
+
+export interface DiscussionSource extends DiscussionSourceVersion {
+  author: string;
+  authorType: "User" | "Bot" | "unknown";
+  body: string;
+  url: string;
+  updatedAt: string | null;
+  threadId: string | null;
+  replyToId: string | null;
+  reviewId: string | null;
+  resolved: boolean | null;
+  outdated: boolean | null;
+  provenance: "participant" | "bot" | "app_automatic" | "unknown";
+}
+
+export interface DiscussionPageCoverage {
+  pages: number;
+  complete: boolean;
+  error: string | null;
+}
+
+export interface DiscussionCoverage {
+  complete: boolean;
+  comments: DiscussionPageCoverage;
+  reviews: DiscussionPageCoverage;
+  threads: DiscussionPageCoverage;
+}
+
+export interface DiscussionSnapshot {
+  prId: string;
+  headSha: string;
+  fetchedAt: string;
+  revision: string;
+  coverage: DiscussionCoverage;
+  sources: DiscussionSource[];
+}
+
+export interface HumanReviewClassifierInput {
+  pr: Pick<PullRequest, "title" | "body" | "author">;
+  discussion: DiscussionSnapshot;
+}
+
+export interface HumanReviewClassification {
+  source: DiscussionSourceVersion;
+  decision: "requested" | "not_requested" | "uncertain";
+  quote: string | null;
+  reason: string;
+}
+
+export interface HumanReviewClassifierOutput {
+  version: 1;
+  revision: string;
+  results: HumanReviewClassification[];
+}
+
+export interface HumanReviewEvidence {
+  id: string;
+  source: DiscussionSourceVersion;
+  author: string;
+  quote: string;
+  url: string;
+  detectedAt: string;
+  acknowledgment: { action: "dismiss" | "resolve"; at: string } | null;
+}
+
+export interface HumanReviewCheck {
+  status: "clear" | "human_review_requested" | "check_needed";
+  headSha: string;
+  revision: string | null;
+  checkedAt: string;
+  coverage: DiscussionCoverage;
+  message: string;
+  detector: {
+    profile: "no-tools-1";
+    mode: ExecutionMode;
+    harness: HarnessId;
+    model: string;
+  } | null;
+}
+
+export interface AutoSubmissionState {
+  version: number;
+  generation: number;
+  status:
+    | "off"
+    | "not_authorized"
+    | "manual_only"
+    | "checking"
+    | "eligible"
+    | "human_review_requested"
+    | "check_needed"
+    | "held"
+    | "submitted";
+  message: string;
+  draftId: string | null;
+  evidence: HumanReviewEvidence[];
+  check: HumanReviewCheck | null;
+  reenableRequired: boolean;
+}
+
+export interface DraftEditIntent {
+  draftId: string;
+  version: number;
+}
+
+export interface DraftAutoSubmission {
+  provenance: AutomaticReviewProvenance | null;
+  manualHold: {
+    reason: "edit_intent" | "saved_edit" | "revision";
+    at: string;
+  } | null;
+}
+
+export interface HumanReviewAcknowledgment {
+  expectedVersion: number;
+  evidenceId: string;
+  source: DiscussionSourceVersion;
+  action: "dismiss" | "resolve";
+}
+
+export interface AutoSubmissionReenable {
+  expectedVersion: number;
+  confirmation: typeof autoSubmissionReenableConfirmation;
+}
+
+export type SubmissionAuthority =
+  | { kind: "manual" }
+  | {
+      kind: "automatic";
+      repository: string;
+      policyVersion: number;
+      prGeneration: number;
+      runId: string;
+      draftId: string;
+      draftVersion: number;
+      headSha: string;
+      discussionRevision: string;
+    };
+
 export interface AppSettings {
+  autoSubmission?: AutoSubmissionPolicy;
   repository: string;
   automation: AutomationPolicy;
   pollIntervalSeconds: number;
@@ -845,6 +1073,7 @@ export interface MergeReadiness extends MergeObservation {
 }
 
 export interface PullRequest {
+  autoSubmission?: AutoSubmissionState;
   id: string;
   number: number;
   repository: string;
@@ -947,6 +1176,7 @@ export interface RunProgress {
 }
 
 export interface ReviewRun {
+  autoSubmission?: AutomaticReviewProvenance | null;
   id: string;
   prId: string;
   kind: "review" | "revision";
@@ -967,6 +1197,7 @@ export interface ReviewRun {
 }
 
 export interface ReviewDraft {
+  autoSubmission?: DraftAutoSubmission;
   id: string;
   runId: string | null;
   headSha: string;
@@ -1022,6 +1253,7 @@ export interface ReviewPayload {
 }
 
 export interface SubmissionPreview {
+  authority?: SubmissionAuthority;
   id: string;
   prId: string;
   draftId: string;
@@ -1031,6 +1263,7 @@ export interface SubmissionPreview {
 }
 
 export interface Submission {
+  authority?: SubmissionAuthority;
   id: string;
   previewId: string;
   status: "submitting" | "submitted" | "uncertain" | "failed";
