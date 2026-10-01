@@ -1056,6 +1056,36 @@ export function createHttpServer(
           }
           if (
             request.method === "POST" &&
+            parts.length === 5 &&
+            parts[2] === "jobs" &&
+            (parts[4] === "unqueue" || parts[4] === "cancel")
+          ) {
+            const body = bodyObject(await readBody(request));
+            if (
+              typeof body.runId !== "string" ||
+              typeof body.headSha !== "string" ||
+              (body.confirmation !== undefined &&
+                typeof body.confirmation !== "string") ||
+              Object.keys(body).some(
+                (key) => !["runId", "headSha", "confirmation"].includes(key),
+              )
+            )
+              throw new ServiceError(
+                400,
+                "invalid_review_job_action",
+                "Exact observed run and head are required",
+              );
+            const detail = service.reviewJobAction(
+              prId,
+              parts[3],
+              parts[4],
+              body as unknown as import("../shared/contracts.js").ReviewJobAction,
+            );
+            sendJson(response, parts[4] === "cancel" ? 202 : 200, detail);
+            return;
+          }
+          if (
+            request.method === "POST" &&
             parts.length === 3 &&
             parts[2] === "review"
           ) {

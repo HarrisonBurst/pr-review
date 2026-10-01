@@ -125,6 +125,7 @@ export function runCommand(
     let stderrTruncated = false;
     let settled = false;
     let forceTimer: NodeJS.Timeout | undefined;
+    let terminatedAt: number | null = null;
     const append = (target: "stdout" | "stderr", chunk: Buffer) => {
       const current = target === "stdout" ? stdout : stderr;
       const next = current + chunk.toString("utf8");
@@ -169,6 +170,7 @@ export function runCommand(
       if (settled) return;
       if (reason === "timeout") timedOut = true;
       if (reason === "abort") aborted = true;
+      terminatedAt ??= Date.now();
       if (!signal("SIGTERM") || forceTimer) return;
       forceTimer = setTimeout(() => {
         if (!settled) signal("SIGKILL");
@@ -185,12 +187,23 @@ export function runCommand(
     );
     child.stderr.on("data", (chunk: Buffer) => append("stderr", chunk));
     child.once("error", rejectCommand);
-    child.once("close", (code, signal) => {
+    child.once("close", async (code, signal) => {
       runningCommands.get(child)!.closed = true;
       closed.resolve();
       clearTermination();
       try {
-        releaseCommand(child);
+        if (aborted && !settled) {
+          while (!releaseCommand(child) && Date.now() - terminatedAt! < 2_000)
+            await new Promise((resolve) => setTimeout(resolve, 25));
+          if (!releaseCommand(child)) {
+            signalCommand(child, "SIGKILL");
+            await new Promise((resolve) => setTimeout(resolve, 100));
+            if (!releaseCommand(child))
+              throw new Error(
+                "Owned command descendants remain; process cleanup is unconfirmed",
+              );
+          }
+        } else releaseCommand(child);
       } catch (error) {
         rejectCommand(error);
       }

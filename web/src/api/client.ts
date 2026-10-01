@@ -32,6 +32,7 @@ import type {
   PullRequestDetail,
   QuestionRequest,
   RevisionRequest,
+  ReviewJobAction,
   SettingsUpdate,
   IntegrationCatalog,
   Submission,
@@ -149,6 +150,16 @@ export const api = {
   importPr: (url: string) => request<PullRequestDetail>("/api/prs/import", json({ url })),
   detail: (id: string) => request<PullRequestDetail>(prPath(id)),
   review: (id: string) => request<PullRequestDetail>(`${prPath(id)}/review`, json({})),
+  reviewJobAction: (
+    id: string,
+    jobId: string,
+    action: "unqueue" | "cancel",
+    body: ReviewJobAction,
+  ) =>
+    request<PullRequestDetail>(
+      `${prPath(id)}/jobs/${encodeURIComponent(jobId)}/${action}`,
+      json(body),
+    ),
   check: (id: string) => request<PullRequestDetail>(`${prPath(id)}/check`, json({})),
   updateAutomation: (id: string, overrides: Partial<AutomationOverrides>) =>
     request<PullRequestDetail>(`${prPath(id)}/automation`, {

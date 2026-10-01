@@ -20,6 +20,7 @@ import { DraftEditor } from "../components/DraftEditor";
 import type { DraftEditing } from "../components/DraftEditGate";
 import { AutoSubmissionBadges, AutoSubmissionCard } from "../components/AutoSubmission";
 import { ProposalCard, RevisionForm } from "../components/Proposals";
+import { ReviewControls } from "../components/ReviewControls";
 import { RunHistory } from "../components/RunHistory";
 import { SubmissionResult, SubmitModal } from "../components/SubmitModal";
 import { Description } from "../components/Description";
@@ -38,6 +39,7 @@ import {
   toUpdate,
 } from "../lib/draft";
 import { relativeTime, shortSha } from "../lib/format";
+import { staleReviewJobs } from "../lib/review-job";
 import { setNavigationGuard } from "../lib/router";
 
 const UNSAVED = "You have unsaved draft edits. Leave and discard them?";
@@ -98,7 +100,7 @@ export function PrView({ id, listed }: { id: string; listed: PullRequest | undef
     const previousDetail = detailRef.current;
     if (
       previousDetail &&
-      ((previousDetail.pr.autoSubmission?.version ?? 0) > (next.pr.autoSubmission?.version ?? 0) ||
+      (staleReviewJobs(previousDetail.pr, next.pr) ||
         previousDetail.drafts.some(
           (draft) =>
             !next.drafts.some(
@@ -616,6 +618,14 @@ export function PrView({ id, listed }: { id: string; listed: PullRequest | undef
           </div>
         </div>
         <div className="actions">
+          <ReviewControls
+            pr={pr}
+            onChange={async (next) => {
+              if (next) adopt(next);
+              else await load();
+              await refresh();
+            }}
+          />
           <button
             type="button"
             className="button"
@@ -711,9 +721,11 @@ export function PrView({ id, listed }: { id: string; listed: PullRequest | undef
                   ? "Requested review"
                   : triggerLabel[activeRun.trigger]}{" "}
               is {activeRun.status === "queued" ? "queued" : "running"}.{" "}
-              {activeRun.kind === "review"
-                ? "It will add a new draft here without replacing the one you are editing."
-                : "Results arrive here without reloading."}
+              {activeRun.cancellation
+                ? "Cancellation has been requested; no late result will replace drafts or create a proposal. Shutdown state is shown above."
+                : activeRun.kind === "review"
+                  ? "It will add a new draft here without replacing the one you are editing."
+                  : "Results arrive here without reloading."}
             </span>
             <RunStage run={activeRun} now={now} />
           </div>

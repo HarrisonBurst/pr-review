@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import type { AppState, ImportOperation, PrStatus, PullRequest } from "../../../shared/contracts";
 import { api, RequestError } from "../api/client";
 import { useApp } from "../app-context";
+import { ReviewControls } from "../components/ReviewControls";
 import { AutoSubmissionBadges } from "../components/AutoSubmission";
 import { Notice, StatusPill, useToast } from "../components/ui";
 import { relativeTime, statusLabel } from "../lib/format";
@@ -491,18 +492,27 @@ export function InboxView() {
                             )}
                             <StatusPill status={pr.status} />
                             <AutoSubmissionBadges state={pr.autoSubmission} />
-                            {action && (
-                              <button
-                                type="button"
-                                className="button small row-action"
-                                aria-label={`${action.label} #${pr.number} ${pr.title}`}
-                                aria-busy={action.busy || undefined}
-                                disabled={!action.enabled}
-                                onClick={() => void review(pr)}
-                              >
-                                {action.label}
-                              </button>
-                            )}
+                            <ReviewControls
+                              pr={pr}
+                              onChange={async () => {
+                                await refresh();
+                              }}
+                            />
+                            {action &&
+                              !pr.reviewJobs?.some(
+                                (job) => job.status === "queued" || job.status === "running",
+                              ) && (
+                                <button
+                                  type="button"
+                                  className="button small row-action"
+                                  aria-label={`${action.label} #${pr.number} ${pr.title}`}
+                                  aria-busy={action.busy || undefined}
+                                  disabled={!action.enabled}
+                                  onClick={() => void review(pr)}
+                                >
+                                  {action.label}
+                                </button>
+                              )}
                           </div>
                           <div className="meta">
                             <span>{pr.author}</span>

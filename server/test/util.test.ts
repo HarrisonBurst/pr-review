@@ -372,6 +372,76 @@ test("shutdown retains descendants after leader close and reports signal refusal
   assert.throws(() => kill(-pid, 0), { code: "ESRCH" });
 });
 
+test("abort waits for owned ignored-stdio descendants after the leader closes", async (t) => {
+  const controller = new AbortController();
+  const ready = Promise.withResolvers<{ parent: number; child: number }>();
+  const result = runCommand(
+    process.execPath,
+    [
+      "-e",
+      `
+    const {spawn}=require("node:child_process");
+    const child=spawn(process.execPath,["-e",'process.on("SIGTERM",()=>{}); console.log(process.pid); setInterval(()=>{},1000)'],{stdio:["ignore","pipe","ignore"]});
+    child.stdout.once("data",chunk=>{console.log(JSON.stringify({parent:process.pid,child:Number(String(chunk).trim())})); child.stdout.destroy(); child.unref();});
+    setInterval(()=>{},1000);
+  `,
+    ],
+    {
+      signal: controller.signal,
+      onStdout: (chunk) => ready.resolve(JSON.parse(chunk.toString())),
+    },
+  );
+  t.after(async () => {
+    await terminateRunningCommands();
+    await result;
+  });
+  const owned = await ready.promise;
+  let settled = false;
+  void result.then(() => {
+    settled = true;
+  });
+  controller.abort();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(settled, false);
+  assert.equal(process.kill(owned.child, 0), true);
+  assert.equal((await result).aborted, true);
+  assert.throws(() => process.kill(owned.child, 0), { code: "ESRCH" });
+});
+
+test("abort does not count retained owned-group uncertainty as completed shutdown", async (t) => {
+  const controller = new AbortController();
+  const ready = Promise.withResolvers<number>();
+  const result = runCommand(
+    process.execPath,
+    ["-e", "console.log(process.pid); setInterval(()=>{},1000)"],
+    {
+      signal: controller.signal,
+      onStdout: (chunk) => ready.resolve(Number(chunk.toString())),
+    },
+  );
+  const pid = await ready.promise;
+  const kill = process.kill.bind(process);
+  t.mock.method(
+    process,
+    "kill",
+    (...[target, signal]: Parameters<typeof process.kill>) => {
+      assert.equal(target, -pid);
+      if (signal === 0) return true;
+      try {
+        return kill(target, signal);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ESRCH") return true;
+        throw error;
+      }
+    },
+  );
+  const rejected = assert.rejects(result, /descendants remain.*unconfirmed/);
+  controller.abort();
+  await rejected;
+  t.mock.restoreAll();
+  await terminateRunningCommands();
+});
+
 test("shutdown terminates all owned commands without a broad process kill", async () => {
   const running = runCommand(process.execPath, [
     "-e",

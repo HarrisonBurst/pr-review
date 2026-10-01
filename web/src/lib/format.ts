@@ -22,6 +22,8 @@ export const runStatusLabel: Record<RunStatus, string> = {
   completed: "Completed",
   failed: "Failed",
   interrupted: "Interrupted",
+  unqueued: "Unqueued",
+  cancelled: "Cancelled",
 };
 
 export const submissionLabel: Record<Submission["status"], string> = {

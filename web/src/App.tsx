@@ -4,6 +4,7 @@ import { api, RequestError } from "./api/client";
 import { useChangeStream, type ChangeEvent } from "./api/events";
 import { AppContext, type OAuthReturn } from "./app-context";
 import { Notice, Pill, ToastProvider, useToast } from "./components/ui";
+import { staleReviewJobs } from "./lib/review-job";
 import { hrefFor, takeOAuthReviewReturn, useRoute } from "./lib/router";
 
 import { InboxView } from "./views/InboxView";
@@ -34,7 +35,15 @@ function Shell({ mock }: { mock: boolean }) {
 
   const refresh = useCallback(async () => {
     try {
-      setState(await api.state());
+      const next = await api.state();
+      setState((current) =>
+        current?.prs.some((pr) => {
+          const incoming = next.prs.find((item) => item.id === pr.id);
+          return incoming && staleReviewJobs(pr, incoming);
+        })
+          ? current
+          : next,
+      );
       setError(null);
     } catch (e) {
       setError(

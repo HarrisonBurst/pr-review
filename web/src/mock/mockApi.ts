@@ -1,6 +1,8 @@
 import {
   automationOff,
   autoSubmissionConfirmation,
+  cancelReviewConfirmation,
+  type ReviewJobAction,
   autoSubmissionReenableConfirmation,
   normalizeAutoSubmissionAuthors,
   type AutoSubmissionUpdate,
@@ -80,6 +82,7 @@ type Listener = (prId?: string) => void;
 
 interface MockOptions {
   reviewDelayMs?: number;
+  reviewControls?: boolean;
   emptySetup?: boolean;
   submitOutcome?: Submission["status"];
   freshness?: FreshnessStatus | "error";
@@ -2121,7 +2124,7 @@ export class MockBackend {
     return () => this.listeners.delete(listener);
   }
 
-  hold(scope: "sync" | "edit-intent" | number): MockHold {
+  hold(scope: "sync" | "edit-intent" | "review-cancel" | number): MockHold {
     let enter!: () => void;
     let resolve!: () => void;
     let reject!: (error: Error) => void;
@@ -2230,6 +2233,20 @@ export class MockBackend {
         run.result !== null &&
         run.headSha === pr.headSha,
     );
+    if (this.options.reviewControls) {
+      const runs = this.runs[id] ?? [];
+      const stopped = runs.findLast((run) => run.status === "unqueued" || !!run.cancellation);
+      pr.reviewJobs = runs
+        .filter((run) => run.status === "queued" || run.status === "running" || run === stopped)
+        .map((run) => ({
+          jobId: `job-${run.id}`,
+          runId: run.id,
+          headSha: run.headSha,
+          kind: run.kind,
+          status: run.status,
+          cancellation: run.cancellation ?? null,
+        }));
+    }
     return pr;
   }
 
@@ -2851,6 +2868,66 @@ export class MockBackend {
     return this.detail(id);
   }
 
+  reviewJobAction(id: string, jobId: string, action: "unqueue" | "cancel", body: ReviewJobAction) {
+    const pr = this.pr(id);
+    const run = (this.runs[id] ?? []).find(
+      (run) => `job-${run.id}` === jobId && run.id === body.runId && run.headSha === body.headSha,
+    );
+    if (!run || run.status !== (action === "unqueue" ? "queued" : "running") || run.cancellation)
+      throw new MockError(
+        409,
+        `SYNTHETIC: observed job is ${run?.status ?? "missing"}; reload its actual state`,
+        "review_job_conflict",
+      );
+    if (action === "cancel" && body.confirmation !== cancelReviewConfirmation)
+      throw new MockError(
+        400,
+        "SYNTHETIC: explicit cancellation confirmation required",
+        "review_confirmation_required",
+      );
+    if (pr.autoSubmission) {
+      pr.autoSubmission.reenableRequired = true;
+      pr.autoSubmission.generation++;
+      pr.autoSubmission.version++;
+    }
+    if (action === "unqueue") {
+      run.status = "unqueued";
+      run.finishedAt = this.now();
+      pr.status = this.latest(id) ? "ready" : "unreviewed";
+    } else {
+      run.cancellation = {
+        status: "pending",
+        requestedAt: this.now(),
+        finishedAt: null,
+        message: "SYNTHETIC waiting for owned shutdown; prior effects are not undone",
+      };
+      void this.held("review-cancel")
+        .then(() => {
+          run.status = "cancelled";
+          run.finishedAt = this.now();
+          run.cancellation = {
+            ...run.cancellation!,
+            status: "confirmed",
+            finishedAt: this.now(),
+            message: "SYNTHETIC owned shutdown confirmed; prior effects are not undone",
+          };
+          pr.status = this.latest(id) ? "ready" : "unreviewed";
+          this.emit(id);
+        })
+        .catch((error: Error) => {
+          run.cancellation = {
+            ...run.cancellation!,
+            status: "unconfirmed",
+            finishedAt: this.now(),
+            message: `SYNTHETIC shutdown unconfirmed: ${error.message}`,
+          };
+          this.emit(id);
+        });
+    }
+    this.emit(id);
+    return this.detail(id);
+  }
+
   review(id: string) {
     if (this.options.reviewRefresh === "fail")
       throw new MockError(
@@ -2967,6 +3044,7 @@ export class MockBackend {
     ];
     const advance = (index: number) =>
       this.later(() => {
+        if (run.status === "unqueued" || run.cancellation) return;
         steps[index]!();
         this.emit(id);
         if (index + 1 < steps.length) advance(index + 1);
@@ -2974,6 +3052,7 @@ export class MockBackend {
       });
     const finish = () =>
       this.later(() => {
+        if (run.status === "unqueued" || run.cancellation) return;
         this.phase(run, "finalize", "completed", "draft created");
         run.status = "completed";
         run.finishedAt = this.now();
@@ -3307,6 +3386,13 @@ export class MockBackend {
     if (root === "prs" && id === "import" && method === "POST") return this.importPr(b.url);
     if (root === "prs" && id) {
       if (!action && method === "GET") return this.detail(id);
+      if (
+        action === "jobs" &&
+        sub &&
+        (subAction === "unqueue" || subAction === "cancel") &&
+        method === "POST"
+      )
+        return this.reviewJobAction(id, sub, subAction, b);
       if (action === "review" && method === "POST") return this.review(id);
       if (action === "check" && method === "POST") return this.check(id);
       if (action === "automation" && method === "PATCH") return this.updateAutomation(id, b);

@@ -6,7 +6,13 @@ export const reviewVerdicts = [
 export type ReviewVerdict = (typeof reviewVerdicts)[number];
 export type Severity = "blocking" | "non_blocking";
 export type RunStatus =
-  "queued" | "running" | "completed" | "failed" | "interrupted";
+  | "queued"
+  | "running"
+  | "completed"
+  | "failed"
+  | "interrupted"
+  | "unqueued"
+  | "cancelled";
 export type PrStatus =
   | "unreviewed"
   | "queued"
@@ -1073,6 +1079,7 @@ export interface MergeReadiness extends MergeObservation {
 }
 
 export interface PullRequest {
+  reviewJobs?: ReviewJob[];
   autoSubmission?: AutoSubmissionState;
   id: string;
   number: number;
@@ -1175,7 +1182,33 @@ export interface RunProgress {
   updatedAt: string;
 }
 
+export const cancelReviewConfirmation =
+  "Stop this owned review; prior native effects and dispatched publications cannot be undone";
+
+export interface ReviewJobAction {
+  runId: string;
+  headSha: string;
+  confirmation?: string;
+}
+
+export interface ReviewCancellation {
+  status: "pending" | "confirmed" | "unconfirmed";
+  requestedAt: string;
+  finishedAt: string | null;
+  message: string;
+}
+
+export interface ReviewJob {
+  jobId: string;
+  runId: string;
+  headSha: string;
+  kind: ReviewRun["kind"];
+  status: RunStatus;
+  cancellation: ReviewCancellation | null;
+}
+
 export interface ReviewRun {
+  cancellation?: ReviewCancellation | null;
   autoSubmission?: AutomaticReviewProvenance | null;
   id: string;
   prId: string;

@@ -1,5 +1,8 @@
 import {
   autoSubmissionConfirmation,
+  cancelReviewConfirmation,
+  type ReviewJobAction,
+  type ReviewJob,
   autoSubmissionReenableConfirmation,
   normalizeAutoSubmissionAuthors,
   normalizeGithubUsername,
@@ -523,9 +526,11 @@ export class ReviewService {
         pollError: meta.pollError,
       },
       integrations: this.getIntegrations(),
-      prs: this.db
-        .listInboxPrs()
-        .map((pr) => ({ ...pr, autoSubmission: this.autoSubmissionState(pr) })),
+      prs: this.db.listInboxPrs().map((pr) => ({
+        ...pr,
+        reviewJobs: this.reviewJobs(pr.id),
+        autoSubmission: this.autoSubmissionState(pr),
+      })),
     };
   }
 
@@ -535,7 +540,11 @@ export class ReviewService {
     const diff = this.db.getDiff(prId)!;
     const drafts = this.db.listDrafts(prId);
     return {
-      pr: { ...pr, autoSubmission: this.autoSubmissionState(pr) },
+      pr: {
+        ...pr,
+        reviewJobs: this.reviewJobs(pr.id),
+        autoSubmission: this.autoSubmissionState(pr),
+      },
       diff: diff.diff,
       diffTruncated: diff.truncated,
       runs: this.db.listRuns(prId),
@@ -1461,7 +1470,7 @@ export class ReviewService {
       return {
         status: "held",
         message:
-          "Acknowledge evidence and explicitly re-enable for future reviews",
+          "Automatic publication is paused; resolve any evidence and explicitly re-enable for future reviews",
       };
     if (
       !policy.enabled ||
@@ -2297,6 +2306,14 @@ export class ReviewService {
   private reconcileDraftStates(): void {
     for (const pr of this.db.listPrs()) {
       const latest = this.db.latestDraft(pr.id);
+      if (
+        pr.status === "reviewing" &&
+        this.db
+          .listRuns(pr.id)
+          .some((run) => run.status === "interrupted" && run.cancellation) &&
+        !this.db.listJobs("running", pr.id).length
+      )
+        this.restoreReviewState(pr.id);
       if (draftDerivedStatuses.has(pr.status)) {
         const status = this.draftStatus(pr.id, pr.headSha);
         if (status !== pr.status) this.db.setPrStatus(pr.id, status);
@@ -2499,6 +2516,7 @@ export class ReviewService {
           "the draft's immutable review snapshot is unavailable",
         );
       const run: ReviewRun = {
+        cancellation: null,
         id: id(),
         prId,
         kind: "revision",
@@ -3161,15 +3179,149 @@ export class ReviewService {
     return question;
   }
 
+  private reviewJobs(prId: string): ReviewJob[] {
+    const jobs = this.db.listJobs(undefined, prId);
+    const stopped = jobs.findLast(
+      (job) =>
+        job.status === "unqueued" || !!this.db.getRun(job.run_id)?.cancellation,
+    );
+    return jobs.flatMap((job) => {
+      if (
+        job.status !== "queued" &&
+        job.status !== "running" &&
+        job !== stopped
+      )
+        return [];
+      const run = this.db.getRun(job.run_id);
+      return run
+        ? [
+            {
+              jobId: job.id,
+              runId: run.id,
+              headSha: run.headSha,
+              kind: run.kind,
+              status: job.status,
+              cancellation: run.cancellation ?? null,
+            },
+          ]
+        : [];
+    });
+  }
+
+  reviewJobAction(
+    prId: string,
+    jobId: string,
+    action: "unqueue" | "cancel",
+    request: ReviewJobAction,
+  ): PullRequestDetail {
+    this.requirePr(prId);
+    const job = this.db.getJob(jobId);
+    const run = job ? this.db.getRun(job.run_id) : null;
+    if (
+      !job ||
+      job.pr_id !== prId ||
+      !run ||
+      run.id !== request.runId ||
+      run.headSha !== request.headSha
+    )
+      throw new ServiceError(
+        409,
+        "review_job_conflict",
+        "The observed review job identity changed; reload its actual state",
+      );
+    const expected = action === "unqueue" ? "queued" : "running";
+    if (job.status !== expected || run.status !== expected || run.cancellation)
+      throw new ServiceError(
+        409,
+        "review_job_conflict",
+        `This job is ${job.status}${run.cancellation ? `; shutdown ${run.cancellation.status}` : ""}, not an actionable ${expected} job. Reload its actual state`,
+      );
+    const controller = this.reviewAborts.get(run.id);
+    if (
+      action === "cancel" &&
+      request.confirmation !== cancelReviewConfirmation
+    )
+      throw new ServiceError(
+        400,
+        "review_confirmation_required",
+        "Explicit owned-review cancellation confirmation is required",
+      );
+    if (action === "cancel" && !controller)
+      throw new ServiceError(
+        409,
+        "review_job_conflict",
+        "Running job ownership is unavailable; shutdown cannot be confirmed",
+      );
+    this.db.transaction(() => {
+      const publication = this.db.getPublicationState(prId);
+      this.db.savePublicationState(prId, {
+        ...publication,
+        reenableRequired: true,
+        generation: publication.generation + 1,
+        version: publication.version + 1,
+      });
+      if (action === "unqueue") {
+        this.db.updateJob(job.id, {
+          status: "unqueued",
+          finished_at: now(),
+          error: null,
+        });
+        this.db.updateRun(run.id, {
+          status: "unqueued",
+          finishedAt: now(),
+          error: null,
+        });
+        this.restoreReviewState(prId);
+      } else {
+        this.db.updateRun(run.id, {
+          cancellation: {
+            status: "pending",
+            requestedAt: now(),
+            finishedAt: null,
+            message:
+              "Cancellation requested; waiting for owned execution shutdown. Prior effects are not undone",
+          },
+        });
+      }
+    });
+    if (action === "cancel")
+      controller!.abort(new Error("Cancelled by the reviewer"));
+    this.queue.schedule();
+    this.emit(prId);
+    return this.getDetail(prId);
+  }
+
+  private restoreReviewState(prId: string): void {
+    const jobs = this.reviewJobs(prId).filter(
+      (job) => job.status === "running" || job.status === "queued",
+    );
+    this.db.setPrStatus(
+      prId,
+      jobs.some((job) => job.status === "running")
+        ? "reviewing"
+        : jobs.length
+          ? "queued"
+          : this.draftStatus(prId, this.requirePr(prId).headSha),
+    );
+    this.reconcileSubmitted(prId);
+  }
+
   maxConcurrentReviews(): number {
     return this.db.getSettings().maxConcurrentReviews;
   }
 
   nextQueuedJob(busyPrIds: ReadonlySet<string>): JobRow | null {
     if (this.closed) return null;
+    const running = this.db.listJobs("running");
+    if (running.length >= this.maxConcurrentReviews()) return null;
     return (
-      this.db.listJobs("queued").find((job) => !busyPrIds.has(job.pr_id)) ??
-      null
+      this.db
+        .listJobs("queued")
+        .find(
+          (job) =>
+            !busyPrIds.has(job.pr_id) &&
+            !running.some((active) => active.pr_id === job.pr_id),
+        ) ?? null
     );
   }
 
@@ -3184,6 +3336,7 @@ export class ReviewService {
   }
 
   private async processJobInternal(job: JobRow): Promise<void> {
+    if (this.closed || this.db.getJob(job.id)?.status !== "queued") return;
     const run = this.db.getRun(job.run_id);
     const pr = this.db.getPr(job.pr_id);
     if (!run || !pr) {
@@ -3210,6 +3363,7 @@ export class ReviewService {
     this.reviewAborts.set(run.id, controller);
     const tracker = new RunProgressTracker(
       (progress) => {
+        if (this.db.getRun(run.id)?.status !== "running") return;
         this.db.setRunProgress(run.id, progress);
         this.emit(pr.id);
       },
@@ -3332,13 +3486,30 @@ export class ReviewService {
       if (job.kind === "review" && run.autoSubmission)
         await this.automaticSubmission(pr.id);
     } catch (error) {
+      if (this.db.getRun(run.id)?.status === "completed") return;
       const message = error instanceof Error ? error.message : String(error);
+      const cancellation = this.db.getRun(run.id)?.cancellation;
+      const confirmed = !!cancellation && error === controller.signal.reason;
       const interrupted = this.closed;
-      const finalMessage = interrupted
-        ? "Backend stopped while review was running"
-        : message;
-      tracker.stopEntries(interrupted ? "interrupted" : "failed", finalMessage);
-      if (interrupted)
+      const finalMessage = cancellation
+        ? confirmed
+          ? "Owned review shutdown confirmed. Prior native effects and dispatched publications are not undone"
+          : `Shutdown unconfirmed: ${message}. This job retains its slot; prior effects are not undone`
+        : interrupted
+          ? "Backend stopped while review was running"
+          : message;
+      const status = cancellation
+        ? confirmed
+          ? "cancelled"
+          : "running"
+        : interrupted
+          ? "interrupted"
+          : "failed";
+      tracker.stopEntries(
+        interrupted || cancellation ? "interrupted" : "failed",
+        finalMessage,
+      );
+      if (interrupted || cancellation)
         tracker.progress.phases.forEach((phase) => {
           if (phase.status === "running") {
             phase.status = "interrupted";
@@ -3353,18 +3524,31 @@ export class ReviewService {
         );
       tracker.close();
       this.db.updateRun(run.id, {
-        status: interrupted ? "interrupted" : "failed",
-        finishedAt: now(),
+        status,
+        finishedAt: status === "running" ? null : now(),
+        ...(cancellation
+          ? {
+              cancellation: {
+                ...cancellation,
+                status: confirmed
+                  ? ("confirmed" as const)
+                  : ("unconfirmed" as const),
+                finishedAt: now(),
+                message: finalMessage,
+              },
+            }
+          : {}),
         error: finalMessage,
         log: clampText(finalMessage, 200_000),
         progress: tracker.progress,
       });
       this.db.updateJob(job.id, {
-        status: interrupted ? "interrupted" : "failed",
-        finished_at: now(),
+        status,
+        finished_at: status === "running" ? null : now(),
         error: finalMessage,
       });
-      if (!interrupted) this.db.setPrStatus(pr.id, "failed");
+      if (cancellation) this.restoreReviewState(pr.id);
+      else if (!interrupted) this.db.setPrStatus(pr.id, "failed");
     } finally {
       this.reviewAborts.delete(run.id);
     }
@@ -3378,6 +3562,17 @@ export class ReviewService {
     preflight: RunPhase | null = null,
   ): void {
     const pr = this.requirePr(prId);
+    if (
+      trigger !== "manual" &&
+      this.db
+        .listRuns(prId)
+        .some(
+          (run) =>
+            run.headSha === pr.headSha &&
+            (run.status === "unqueued" || !!run.cancellation),
+        )
+    )
+      return;
     const pending = this.db
       .listJobs()
       .find(
@@ -3390,6 +3585,7 @@ export class ReviewService {
     if (pending) return;
     const diff = this.db.getDiff(prId)!;
     const run: ReviewRun = {
+      cancellation: null,
       id: id(),
       prId,
       kind: "review",
