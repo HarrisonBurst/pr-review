@@ -53,7 +53,7 @@ interface PanelState {
 }
 
 export function PrView({ id, listed }: { id: string; listed: PullRequest | undefined }) {
-  const { state, detailVersion, refresh } = useApp();
+  const { state, detailVersion, refresh, navigate } = useApp();
   const toast = useToast();
   const [detail, setDetail] = useState<PullRequestDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -407,10 +407,12 @@ export function PrView({ id, listed }: { id: string; listed: PullRequest | undef
     .slice()
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
   const draftOutdated = !!saved && saved.headSha !== pr.headSha;
+  const draftSubmitted = pr.status === "submitted" && saved?.id === latest?.id;
   const canSubmit =
     !!saved &&
     !dirty &&
     !draftOutdated &&
+    !draftSubmitted &&
     pr.state === "OPEN" &&
     latestSubmission?.status !== "submitting" &&
     latestSubmission?.status !== "uncertain";
@@ -492,7 +494,9 @@ export function PrView({ id, listed }: { id: string; listed: PullRequest | undef
                   ? "Save your edits first"
                   : draftOutdated
                     ? "This draft targets an older commit"
-                    : undefined
+                    : draftSubmitted
+                      ? "This draft has already been submitted"
+                      : undefined
             }
             onClick={() => setSubmitting(true)}
           >
@@ -856,6 +860,10 @@ export function PrView({ id, listed }: { id: string; listed: PullRequest | undef
           findings={saved.findings}
           onClose={() => setSubmitting(false)}
           onSubmitted={onSubmitted}
+          onBackToInbox={() => {
+            setSubmitting(false);
+            navigate({ name: "inbox" });
+          }}
         />
       )}
     </div>

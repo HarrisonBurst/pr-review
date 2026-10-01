@@ -19,6 +19,7 @@ export function SubmitModal({
   findings,
   onClose,
   onSubmitted,
+  onBackToInbox,
 }: {
   prId: string;
   draftId: string;
@@ -26,9 +27,9 @@ export function SubmitModal({
   findings: Finding[];
   onClose: () => void;
   onSubmitted: (submission: Submission) => void;
+  onBackToInbox: () => void;
 }) {
   const [phase, setPhase] = useState<Phase>({ kind: "loading" });
-  const [armed, setArmed] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -74,22 +75,22 @@ export function SubmitModal({
       onClose={onClose}
       footer={
         phase.kind === "done" ? (
-          <button type="button" className="button primary" onClick={onClose}>
-            Close
-          </button>
+          <>
+            <button
+              type="button"
+              className={`button ${phase.submission.status === "submitted" ? "ghost" : "primary"}`}
+              onClick={onClose}
+            >
+              Close
+            </button>
+            {phase.submission.status === "submitted" && (
+              <button type="button" className="button primary" onClick={onBackToInbox}>
+                Back to Inbox
+              </button>
+            )}
+          </>
         ) : (
           <>
-            {preview && (
-              <label className="checkbox grow">
-                <input
-                  type="checkbox"
-                  checked={armed}
-                  disabled={phase.kind === "submitting"}
-                  onChange={(e) => setArmed(e.target.checked)}
-                />
-                I have read the exact payload above
-              </label>
-            )}
             <button
               type="button"
               className="button ghost"
@@ -101,7 +102,7 @@ export function SubmitModal({
             <button
               type="button"
               className="button primary"
-              disabled={!preview || !armed || phase.kind === "submitting"}
+              disabled={!preview || phase.kind === "submitting"}
               onClick={() => void submit()}
             >
               {phase.kind === "submitting"
