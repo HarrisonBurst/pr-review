@@ -136,8 +136,8 @@ test("explicit valid modes preserve saved settings and consent across restart", 
   }
 });
 
-test("archived selections and immutable history survive GET/restart; old questions never acquire current settings", async () => {
-  const f = await fixture();
+test("archived selections and immutable history survive GET/restart; old questions never acquire current settings", async (t) => {
+  const f = await fixture(undefined, t);
   try {
     await f.send("/settings/harness", f.selection, "PATCH");
     await f.send("/sync", {});
@@ -207,8 +207,13 @@ test("archived selections and immutable history survive GET/restart; old questio
     assert.deepEqual(await archive(), history);
     assert.deepEqual(await f.calls(), calls);
     assert.deepEqual(f.service.db.getSettings().automation, automationOff);
+  } catch (error) {
+    f.diagnostics!.bodyFailed(error);
+    throw error;
   } finally {
-    await f.close();
+    await f.diagnostics!.cleanup(async () => {
+      await f.close();
+    });
   }
 });
 
