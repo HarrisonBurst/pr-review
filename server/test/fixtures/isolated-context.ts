@@ -8,6 +8,8 @@ import {
   rm,
 } from "node:fs/promises";
 import path from "node:path";
+import type { TestContext } from "node:test";
+import { isolatedDiagnostics } from "./isolated-diagnostics.js";
 import { tmpdir } from "node:os";
 import { loadConfig } from "../../config.js";
 import { ReviewService } from "../../service.js";
@@ -20,6 +22,7 @@ import type {
 const prId = "demo/repository#42";
 export async function fixture(
   readProviders?: import("../../read-providers.js").ReadProviders,
+  diagnosticContext?: TestContext,
 ) {
   const root = await mkdtemp(path.join(tmpdir(), "isolated-roles-demo-"));
   const home = path.join(root, "home");
@@ -85,6 +88,9 @@ export async function fixture(
     workflowConfigPath: "",
     reviewer: { skillPath, model: null, additionalInstructions: "" },
   });
+  const diagnostics = diagnosticContext
+    ? isolatedDiagnostics(diagnosticContext, bin)
+    : undefined;
   let service = await ReviewService.create(
     app,
     undefined,
@@ -125,6 +131,7 @@ export async function fixture(
   return {
     root,
     home,
+    diagnostics,
     env,
     app,
     skillPath,
@@ -160,15 +167,13 @@ export async function fixture(
     },
     stop,
     async dispatch() {
+      const started = diagnostics ? performance.now() : 0;
       service.nextQueuedJob = nextQueuedJob;
       schedule();
       for (let attempt = 0; attempt < 200; attempt++) {
-        if (
-          !["queued", "running"].includes(
-            service.getDetail(prId).runs[0].status,
-          )
-        )
-          return;
+        const run = service.getDetail(prId).runs[0];
+        diagnostics?.dispatch(run, attempt, started);
+        if (!["queued", "running"].includes(run.status)) return;
         await new Promise((resolve) => setTimeout(resolve, 20));
       }
       assert.fail("Fixture queue did not finish");

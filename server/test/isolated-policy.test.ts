@@ -116,9 +116,9 @@ test("policy HTTP capture dispatch replaces native HOME and strips ambient crede
 });
 
 for (const harness of ["claude", "codex"] as const)
-  test(`policy native ${harness} import, explicit Load/Test and captured gateway deny direct calls and drift`, async () => {
+  test(`policy native ${harness} import, explicit Load/Test and captured gateway deny direct calls and drift`, async (t) => {
     const p = await providerFixture();
-    const f = await fixture(p.providers);
+    const f = await fixture(p.providers, t);
     let tools: Awaited<ReturnType<typeof localTools>> | undefined;
     try {
       const source = path.join(
@@ -358,10 +358,15 @@ args=["must-not-execute.js"]
       );
       assert.equal(p.requests.length, callsBeforeSourceDrift);
       assert.doesNotMatch(JSON.stringify(await f.detail()), new RegExp(secret));
+    } catch (error) {
+      f.diagnostics!.bodyFailed(error);
+      throw error;
     } finally {
-      await tools?.close();
-      await f.close();
-      await p.close();
+      await f.diagnostics!.cleanup(async () => {
+        await tools?.close();
+        await f.close();
+        await p.close();
+      });
     }
   });
 
