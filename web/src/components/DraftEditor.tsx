@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { DraftUpdate, ReviewDraft, ReviewRun, ReviewVerdict } from "../../../shared/contracts";
 import { draftLabel, isManual, newFinding } from "../lib/draft";
 import { relativeTime, shortSha, verdictLabel } from "../lib/format";
+import { DraftEditGate, type DraftEditing } from "./DraftEditGate";
 import { FindingEditor } from "./FindingEditor";
 import { Markdown } from "./Markdown";
 import { AutoTextarea, Notice, Pill } from "./ui";
@@ -16,6 +17,7 @@ export interface DraftEditorProps {
   remoteChanged: boolean;
   conflict: string | null;
   saving: boolean;
+  editing: DraftEditing;
   onEdit: (next: DraftUpdate) => void;
   onSave: () => void;
   onDiscard: () => void;
@@ -34,6 +36,7 @@ export function DraftEditor({
   remoteChanged,
   conflict,
   saving,
+  editing,
   onEdit,
   onSave,
   onDiscard,
@@ -48,12 +51,12 @@ export function DraftEditor({
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "s") {
         e.preventDefault();
-        if (dirty && !saving) onSave();
+        if (dirty && !saving && editing.allowed) onSave();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [dirty, saving, onSave]);
+  }, [dirty, saving, editing.allowed, onSave]);
 
   const latest = drafts[0]!;
   const isLatest = latest.id === saved.id;
@@ -137,6 +140,7 @@ export function DraftEditor({
         </div>
       )}
       <div className="card-body stack" style={{ gap: 16 }}>
+        <DraftEditGate editing={editing} />
         <div className="field">
           <span className="field-label" id="draft-overview-label">
             Overview <span className="field-hint">private, from the review, read-only</span>
@@ -171,7 +175,8 @@ export function DraftEditor({
             minRows={3}
             value={edit.body}
             disabled={saving}
-            onChange={(e) => onEdit({ ...edit, body: e.target.value })}
+            readOnly={!editing.allowed}
+            onChange={(e) => editing.allowed && onEdit({ ...edit, body: e.target.value })}
           />
         </div>
         <div className="field inline">
@@ -185,7 +190,7 @@ export function DraftEditor({
                 type="button"
                 role="radio"
                 aria-checked={edit.verdict === v}
-                disabled={saving}
+                disabled={saving || !editing.allowed}
                 onClick={() => onEdit({ ...edit, verdict: v })}
               >
                 {verdictLabel[v]}
@@ -199,7 +204,7 @@ export function DraftEditor({
             <button
               type="button"
               className="button small"
-              disabled={saving}
+              disabled={saving || !editing.allowed}
               onClick={() => onEdit({ ...edit, findings: [...edit.findings, newFinding()] })}
             >
               Add finding
@@ -216,7 +221,7 @@ export function DraftEditor({
                 key={finding.id}
                 finding={finding}
                 index={index}
-                disabled={saving}
+                disabled={saving || !editing.allowed}
                 onChange={(next) =>
                   onEdit({
                     ...edit,
@@ -265,7 +270,7 @@ export function DraftEditor({
         <button
           type="button"
           className="button primary"
-          disabled={!dirty || saving || (!edit.body.trim() && !included.length)}
+          disabled={!dirty || saving || !editing.allowed || (!edit.body.trim() && !included.length)}
           onClick={onSave}
           title="⌘S"
         >

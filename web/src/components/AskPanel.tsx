@@ -19,6 +19,7 @@ import { newFinding } from "../lib/draft";
 import { jumpToDiff } from "../lib/jump";
 import { relativeTime, shortSha } from "../lib/format";
 import { Markdown } from "./Markdown";
+import { DraftEditGate, type DraftEditing } from "./DraftEditGate";
 import { AutoTextarea, Notice, Pill, Segmented, SeverityPill, type Tone } from "./ui";
 
 export type AddTarget =
@@ -183,6 +184,7 @@ export function CommentComposer({
   initial,
   target,
   busy,
+  editing,
   onAdd,
   onCancel,
 }: {
@@ -190,6 +192,7 @@ export function CommentComposer({
   initial: Partial<Finding> & { evidence?: string };
   target: AddTarget;
   busy: boolean;
+  editing: DraftEditing | null;
   onAdd: (finding: Finding) => Promise<string | null>;
   onCancel: () => void;
 }) {
@@ -208,7 +211,7 @@ export function CommentComposer({
   const chosen = choices.find((c) => c.key === choice) ?? choices[0]!;
   const submit = async (e: FormEvent) => {
     e.preventDefault();
-    if (!body.trim() || blocked) return;
+    if (!body.trim() || blocked || (editing && !editing.allowed)) return;
     const finding = newFinding({
       body,
       severity,
@@ -224,6 +227,7 @@ export function CommentComposer({
   };
   return (
     <form className="ask-compose" onSubmit={submit} aria-label="Comment composer">
+      {editing && <DraftEditGate editing={editing} />}
       {issue && (
         <Notice tone="warn">
           <span className="small">{issue}</span>
@@ -235,7 +239,7 @@ export function CommentComposer({
           id="ask-anchor"
           className="select"
           value={choice}
-          disabled={busy}
+          disabled={busy || (!!editing && !editing.allowed)}
           onChange={(e) => setChoice(e.target.value)}
         >
           {choices.map((c) => (
@@ -249,7 +253,7 @@ export function CommentComposer({
         <Segmented<Severity>
           label="Severity"
           value={severity}
-          disabled={busy}
+          disabled={busy || (!!editing && !editing.allowed)}
           onChange={setSeverity}
           options={[
             { value: "blocking", label: "Blocking" },
@@ -260,7 +264,7 @@ export function CommentComposer({
           className="select finding-origin"
           aria-label="Origin"
           value={origin}
-          disabled={busy}
+          disabled={busy || (!!editing && !editing.allowed)}
           onChange={(e) => setOrigin(e.target.value as Finding["origin"])}
         >
           <option value="introduced">Introduced here</option>
@@ -278,6 +282,7 @@ export function CommentComposer({
           minRows={3}
           value={body}
           disabled={busy}
+          readOnly={!!editing && !editing.allowed}
           onChange={(e) => setBody(e.target.value)}
         />
       </div>
@@ -309,7 +314,7 @@ export function CommentComposer({
         <button
           type="submit"
           className="button primary small"
-          disabled={busy || !body.trim() || !!blocked}
+          disabled={busy || !body.trim() || !!blocked || (!!editing && !editing.allowed)}
         >
           {addLabel(target)}
         </button>
@@ -390,6 +395,7 @@ export function AskPanel({
   target,
   draftId,
   busy,
+  editing,
   onAsk,
   onCancel,
   onRetry,
@@ -405,6 +411,7 @@ export function AskPanel({
   target: AddTarget;
   draftId: string | null;
   busy: boolean;
+  editing: DraftEditing | null;
   onAsk: (mode: QuestionMode, question: string, parentId: string | null) => Promise<string | null>;
   onCancel: (questionId: string) => Promise<void>;
   onRetry: (questionId: string) => Promise<void>;
@@ -538,6 +545,7 @@ export function AskPanel({
           }
           target={target}
           busy={busy}
+          editing={editing}
           onAdd={onAdd}
           onCancel={() => setView(threadId ? "thread" : "toolbar")}
         />

@@ -4,6 +4,7 @@ import {
   effectiveAutomation,
   inheritAutomation,
   type AppSettings,
+  type AutoSubmissionState,
   type AppHealth,
   type CapturedHarnessEntry,
   type CommitSummary,
@@ -717,6 +718,13 @@ export const policyFixture = (
 
 export const settings: AppSettings = {
   repository: "acme/rocket",
+  autoSubmission: {
+    repository: "acme/rocket",
+    enabled: false,
+    authors: [],
+    version: 0,
+    consentedAt: null,
+  },
   automation: { ...automationOff, pollRequests: true, reviewRequests: true },
   pollIntervalSeconds: 120,
   maxConcurrentReviews: 1,
@@ -1901,6 +1909,7 @@ export const drafts: Record<string, ReviewDraft[]> = {
   "pr-482": [
     {
       id: "draft-482",
+      autoSubmission: { provenance: null, manualHold: { reason: "saved_edit", at: t(20) } },
       runId: "run-2",
       headSha: "9b8d7e2c4f1a0b3d5e6f7a8b9c0d1e2f3a4b5c6d",
       version: 3,
@@ -1913,6 +1922,7 @@ export const drafts: Record<string, ReviewDraft[]> = {
     },
     {
       id: "draft-482-old",
+      autoSubmission: { provenance: null, manualHold: { reason: "saved_edit", at: t(100) } },
       runId: "run-1",
       headSha: "1111111c4f1a0b3d5e6f7a8b9c0d1e2f3a4b5c6d",
       version: 2,
@@ -1953,6 +1963,55 @@ export const drafts: Record<string, ReviewDraft[]> = {
     },
   ],
 };
+
+export function autoSubmissionState(
+  status: "human_review_requested" | "check_needed" | "held" | "off",
+  headSha: string,
+): AutoSubmissionState {
+  const human = status !== "check_needed";
+  const complete = status !== "check_needed";
+  const page = {
+    pages: complete ? 1 : 0,
+    complete,
+    error: complete ? null : "SYNTHETIC: discussion fetch incomplete",
+  };
+  return {
+    version: 1,
+    generation: 1,
+    status,
+    draftId: "draft-482",
+    reenableRequired: true,
+    message: human
+      ? "SYNTHETIC: retained human hold, including across new heads and while settings are off."
+      : "SYNTHETIC: incomplete discussion check; no human intent established.",
+    evidence: human
+      ? [
+          {
+            id: "synthetic-evidence-1",
+            source: { kind: "comment", id: "synthetic-comment-1", version: "synthetic-source-v1" },
+            author: "demo-human",
+            quote: "SYNTHETIC: please have a person review this before publishing.",
+            url: "https://github.com/acme/rocket/pull/482#issuecomment-100",
+            detectedAt: t(10),
+            acknowledgment: null,
+          },
+        ]
+      : [],
+    check: {
+      status: complete ? "human_review_requested" : "check_needed",
+      headSha,
+      revision: complete ? "synthetic-discussion-v1" : null,
+      checkedAt: t(10),
+      coverage: { complete, comments: { ...page }, reviews: { ...page }, threads: { ...page } },
+      message: human
+        ? "SYNTHETIC: exact source quote recorded."
+        : "SYNTHETIC: fetch incomplete; detector not run.",
+      detector: complete
+        ? { profile: "no-tools-1", mode: "separated", harness: "pi", model: "synthetic-detector" }
+        : null,
+    },
+  };
+}
 
 export const submissions: Record<string, Submission[]> = {
   "pr-471": [

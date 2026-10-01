@@ -43,6 +43,7 @@ export function FindingEditor({
         <Segmented<Severity>
           label={`Severity for finding ${index + 1}`}
           value={finding.severity}
+          disabled={disabled}
           onChange={(severity) => set("severity", severity)}
           options={[
             { value: "blocking", label: "Blocking" },

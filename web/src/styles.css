@@ -3016,3 +3016,46 @@ main {
 [data-autofocus]:focus {
   outline: none;
 }
+
+.auto-submission-settings {
+  border-top: 1px solid var(--line);
+  padding-top: 16px;
+}
+
+.auto-submission-settings p {
+  margin: 0;
+}
+
+.auto-author-table {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.auto-author-table table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.auto-author-table th,
+.auto-author-table td {
+  padding: 8px 6px;
+  border-bottom: 1px solid var(--line);
+  text-align: center;
+}
+
+.auto-author-table th:first-child {
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+.human-evidence {
+  overflow-wrap: anywhere;
+}
+
+.human-evidence blockquote {
+  margin: 8px 0;
+  padding-left: 10px;
+  border-left: 2px solid var(--warn);
+  white-space: pre-wrap;
+}
