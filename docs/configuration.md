@@ -39,6 +39,12 @@ Stop your own prior instance or choose another `PR_REVIEW_PORT` for the built ap
 
 Run `gh auth status` in the same environment that launches the app and verify repository access. The app does not import every open PR; import other PRs explicitly by URL. Sync does not run reviews while automation is disabled.
 
+### Checkout authentication
+
+Reviews and questions acquire their recorded base/head on the host before any harness or container starts. Hardened Git ignores global/system configuration; HTTPS fetches explicitly use the existing `gh auth git-credential` route only for the validated GitHub origin, with redirects and prompts disabled. SSH origins retain their existing trusted SSH transport. Unexpected origins or clone-local transport configuration fail closed; authentication refusals do not retry through the recorded-head fallback. No login or global Git setup is performed.
+
+This host transport route is separate from native model authentication and app-owned Connections grants. It is operation-only, never stored in checkout Git configuration or transferred to an Isolated reviewer or Docker container. A successful clone or sync does not prove access to the recorded commits.
+
 ### Execution unavailable
 
 Install and authenticate the selected harness, verify the absolute skill path and explicitly Save. Archived captures require a new save, not a database reset. Dangerous requires fresh confirmation every time.

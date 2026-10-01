@@ -33,11 +33,15 @@ async function fixture() {
   };
   await script(
     "gh",
-    `const fs=require('node:fs'); fs.appendFileSync(process.env.FIXTURE_LOG, 'gh\\n'); if(process.env.FIXTURE_FAIL)process.exit(1); const args=process.argv.slice(2); if(process.env.FIXTURE_REPO){const result=require('node:child_process').spawnSync('git',['clone','--no-checkout',process.env.FIXTURE_REPO,args[3]],{stdio:'inherit'});process.exit(result.status??1)} fs.mkdirSync(args[3],{recursive:true});`,
+    `const fs=require('node:fs'); fs.appendFileSync(process.env.FIXTURE_LOG, 'gh\\n'); if(process.env.FIXTURE_FAIL)process.exit(1); const args=process.argv.slice(2); if(process.env.FIXTURE_REPO){const {spawnSync}=require('node:child_process'); const result=spawnSync('git',['clone','--no-checkout',process.env.FIXTURE_REPO,args[3]],{stdio:'inherit'}); if(result.status===0)spawnSync('git',['-C',args[3],'config','remote.origin.url','git@github.com:fixture/repository.git'],{stdio:'inherit'});process.exit(result.status??1)} fs.mkdirSync(args[3],{recursive:true});`,
   );
   await script(
     "git",
-    `const args=process.argv.slice(2); if(args[0]==='rev-parse')process.stdout.write(args.at(-1)==='HEAD'?'head-sha':args.at(-1).replace('^{commit}',''));`,
+    `const args=process.argv.slice(2); if(args[0]==='config')process.stdout.write(args.at(-1)==='remote.origin.url'?'git@github.com:fixture/repository.git':'core.bare'); if(args[0]==='rev-parse')process.stdout.write(args.at(-1)==='HEAD'?'head-sha':args.at(-1).replace('^{commit}',''));`,
+  );
+  await script(
+    "ssh",
+    `const result=require('node:child_process').spawnSync('/usr/bin/git',['upload-pack',process.env.FIXTURE_REPO],{stdio:'inherit'});process.exit(result.status??1);`,
   );
   const env = checkoutEnvironment({
     HOME: root,
@@ -45,6 +49,8 @@ async function fixture() {
     FIXTURE_LOG: join(root, "calls"),
     FIXTURE_FAIL: "",
     FIXTURE_REPO: "",
+    GIT_SSH_COMMAND: join(bin, "ssh"),
+    GIT_SSH_VARIANT: "ssh",
   });
   return {
     root,

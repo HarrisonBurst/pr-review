@@ -94,6 +94,7 @@ fs.mkdirSync(require("node:path").join(args[3], ".git"), { recursive: true });`,
     `const fs = require("node:fs");
 const args = process.argv.slice(2);
 fs.appendFileSync(process.env.FAKE_LOG, JSON.stringify({ command: "git", args, cwd: process.cwd() }) + "\\n");
+if (args[0] === "config") process.stdout.write(args.at(-1) === "remote.origin.url" ? "git@github.com:owner/repo.git" : "core.bare");
 if (args[0] === "rev-parse") {
   const target = args.at(-1);
   process.stdout.write(target === "HEAD" ? process.env.FAKE_HEAD : target.replace("^{commit}", ""));

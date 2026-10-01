@@ -1,4 +1,9 @@
-import { clampText, runCommand, type CommandResult } from "./util.js";
+import {
+  clampText,
+  repositoryParts,
+  runCommand,
+  type CommandResult,
+} from "./util.js";
 
 export interface SourceIdentity {
   repository: string;
@@ -54,6 +59,64 @@ export class SourceCheckout {
       maxOutputBytes: 2_000_000,
       env: this.env,
     });
+  }
+
+  private async fetchArguments(
+    source: SourceIdentity,
+    checkoutDir: string,
+    signal?: AbortSignal,
+  ): Promise<string[]> {
+    const { owner, name } = repositoryParts(source.repository);
+    const remote = await this.git(
+      ["config", "--local", "--no-includes", "--get-all", "remote.origin.url"],
+      checkoutDir,
+      signal,
+    );
+    const configuration = await this.git(
+      ["config", "--local", "--no-includes", "--name-only", "--list"],
+      checkoutDir,
+      signal,
+    );
+    const url = remote.stdout.trim();
+    const repository = `${owner}/${name}`.toLowerCase();
+    const https = /^https:\/\/github\.com\/([^\s?#]+)$/.exec(url);
+    const ssh =
+      /^(?:git@github\.com:|ssh:\/\/git@github\.com\/)([^\s?#]+)$/.exec(url);
+    const destination = (https ?? ssh)?.[1].replace(/\.git$/, "").toLowerCase();
+    if (
+      remote.code !== 0 ||
+      configuration.code !== 0 ||
+      destination !== repository ||
+      configuration.stdout
+        .trim()
+        .split("\n")
+        .some(
+          (key) =>
+            !/^(?:core\.(?:repositoryformatversion|filemode|bare|logallrefupdates|ignorecase|precomposeunicode)|remote\.[^.]+\.(?:url|fetch|tagopt)|branch\..+\.(?:remote|merge))$/.test(
+              key,
+            ),
+        )
+    )
+      throw new CommandFailure(
+        "Unable to prepare review checkout: origin or Git configuration is not trusted for the recorded GitHub repository",
+        "Unable to prepare review checkout: origin or Git configuration is not trusted for the recorded GitHub repository",
+      );
+    return https
+      ? [
+          "-c",
+          "credential.helper=",
+          "-c",
+          `credential.${url}.helper=`,
+          "-c",
+          `credential.${url}.helper=!gh auth git-credential 2>/dev/null`,
+          "-c",
+          "credential.useHttpPath=true",
+          "-c",
+          "core.askPass=",
+          "-c",
+          "http.followRedirects=false",
+        ]
+      : [];
   }
 
   private async verifyRevision(
@@ -114,6 +177,7 @@ export class SourceCheckout {
     checkoutDir: string,
     signal?: AbortSignal,
   ): Promise<string[]> {
+    repositoryParts(source.repository);
     const log: string[] = [];
     const clone = await runCommand(
       "gh",
@@ -141,8 +205,13 @@ export class SourceCheckout {
       );
     log.push("temporary repository checkout prepared");
 
+    const fetchArguments = await this.fetchArguments(
+      source,
+      checkoutDir,
+      signal,
+    );
     const baseFetch = await this.git(
-      ["fetch", "--no-tags", "origin", source.baseSha],
+      [...fetchArguments, "fetch", "--no-tags", "origin", source.baseSha],
       checkoutDir,
       signal,
     );
@@ -153,13 +222,24 @@ export class SourceCheckout {
       );
 
     let headFetch = await this.git(
-      ["fetch", "--no-tags", "origin", `pull/${source.number}/head`],
+      [
+        ...fetchArguments,
+        "fetch",
+        "--no-tags",
+        "origin",
+        `pull/${source.number}/head`,
+      ],
       checkoutDir,
       signal,
     );
-    if (headFetch.code !== 0)
+    if (
+      headFetch.code !== 0 &&
+      !/(?:authentication failed|could not read (?:username|password)|requested URL returned error: (?:401|403))/i.test(
+        headFetch.stderr,
+      )
+    )
       headFetch = await this.git(
-        ["fetch", "--no-tags", "origin", source.headSha],
+        [...fetchArguments, "fetch", "--no-tags", "origin", source.headSha],
         checkoutDir,
         signal,
       );

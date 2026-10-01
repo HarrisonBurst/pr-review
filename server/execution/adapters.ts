@@ -25,8 +25,20 @@ import { requireSupportedExecution } from "./supported.js";
 export function checkoutEnvironment(
   base: NodeJS.ProcessEnv,
 ): NodeJS.ProcessEnv {
+  const env = Object.fromEntries(
+    Object.entries(base).filter(
+      ([key]) =>
+        key !== "GIT_CONFIG_PARAMETERS" &&
+        key !== "GIT_CURL_VERBOSE" &&
+        key !== "GH_DEBUG" &&
+        !key.startsWith("GIT_TRACE"),
+    ),
+  );
   return commandEnvironment({
-    ...base,
+    ...env,
+    GIT_ASKPASS: "/usr/bin/false",
+    GH_PROMPT_DISABLED: "1",
+    LC_ALL: "C",
     GIT_CONFIG_GLOBAL: "/dev/null",
     GIT_TEMPLATE_DIR: "/dev/null",
     GIT_CONFIG_COUNT: "3",
