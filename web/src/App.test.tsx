@@ -1072,16 +1072,164 @@ describe("pull request detail", () => {
     expect(within(dialog).getByText(/invoice\.ts:58 \(not in this diff\)/)).toBeInTheDocument();
     expect(within(dialog).queryByText(/Evidence/)).not.toBeInTheDocument();
     const submit = within(dialog).getByRole("button", { name: /Submit request changes to GitHub/ });
-    expect(submit).toBeDisabled();
+    expect(submit).toBeEnabled();
+    expect(within(dialog).queryByRole("checkbox")).not.toBeInTheDocument();
     expect(backend.submissions["pr-482"]).toBeUndefined();
-    await user.click(within(dialog).getByRole("checkbox", { name: /I have read/ }));
+    const payload = JSON.parse(raw.textContent!);
     await user.click(submit);
     expect(await within(dialog).findByText("View on GitHub")).toBeInTheDocument();
     expect(backend.submissions["pr-482"]).toHaveLength(1);
+    expect(backend.submissions["pr-482"]![0]!.payload).toEqual(payload);
+    const close = within(dialog).getByRole("button", { name: "Close" });
+    const back = within(dialog).getByRole("button", { name: "Back to Inbox" });
+    expect(close).not.toHaveClass("primary");
+    expect(back).toHaveClass("primary");
+    expect(close.nextElementSibling).toBe(back);
+    await user.click(close);
+    expect(window.location.hash).toBe("#/pr/pr-482");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Preview and submit" })).toBeDisabled(),
+    );
+    expect(screen.getByRole("button", { name: "Preview and submit" })).toHaveAttribute(
+      "title",
+      "This draft has already been submitted",
+    );
+    expect(screen.queryByText("Nothing has been sent to GitHub.")).not.toBeInTheDocument();
+  });
+
+  it("closes the successful result and returns to the inbox with its primary action", async () => {
+    const user = mount();
+    await screen.findByLabelText(/GitHub review body/);
+    await user.click(screen.getByRole("button", { name: "Preview and submit" }));
+    const dialog = await screen.findByRole("dialog");
+    await within(dialog).findByTestId("payload-body");
+    await user.click(within(dialog).getByRole("button", { name: /Submit request changes/ }));
+    await user.click(await within(dialog).findByRole("button", { name: "Back to Inbox" }));
+    expect(await screen.findByRole("heading", { name: "Inbox" })).toBeInTheDocument();
+    expect(window.location.hash).toBe("#/");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("link", { name: /#482/ }));
+    await screen.findByLabelText(/GitHub review body/);
+    expect(screen.getByRole("button", { name: "Preview and submit" })).toBeDisabled();
+  });
+
+  it("keeps cancel publication-free and disables confirmation while submitting", async () => {
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    let writes = 0;
+    const user = mount(undefined, (b) => {
+      const handle = b.handle.bind(b);
+      b.handle = (method, path, body) => {
+        if (path.endsWith("/submit")) {
+          writes++;
+          return gate.then(() => handle(method, path, body));
+        }
+        return handle(method, path, body);
+      };
+    });
+    await screen.findByLabelText(/GitHub review body/);
+    await user.click(screen.getByRole("button", { name: "Preview and submit" }));
+    let dialog = await screen.findByRole("dialog");
+    await within(dialog).findByTestId("payload-body");
+    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(writes).toBe(0);
+    expect(backend.submissions["pr-482"]).toBeUndefined();
+    expect(screen.getByRole("button", { name: "Preview and submit" })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "Preview and submit" }));
+    dialog = await screen.findByRole("dialog");
+    await within(dialog).findByTestId("payload-body");
+    await user.click(within(dialog).getByRole("button", { name: /Submit request changes/ }));
+    expect(within(dialog).getByRole("button", { name: "Submitting" })).toBeDisabled();
+    expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeDisabled();
+    expect(writes).toBe(1);
+    release();
+    expect(await within(dialog).findByRole("button", { name: "Back to Inbox" })).toBeEnabled();
+    expect(writes).toBe(1);
+  });
+
+  it("allows saved edits and new re-review drafts after a settled submission", async () => {
+    const user = mount(undefined, (b) => {
+      const draft = b.detail("pr-482").draft!;
+      b.submit("pr-482", b.preview("pr-482", draft.id, draft.version).id);
+    });
+    const body = await screen.findByLabelText(/GitHub review body/);
+    expect(screen.getByRole("button", { name: "Preview and submit" })).toBeDisabled();
+    await user.type(body, " Saved edit after submission");
+    expect(screen.getByRole("button", { name: "Preview and submit" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Save draft" }));
+    await screen.findByText("All changes saved");
+    expect(screen.getByRole("button", { name: "Preview and submit" })).toBeEnabled();
+    const saved = backend.detail("pr-482").draft!;
+    backend.submit("pr-482", backend.preview("pr-482", saved.id, saved.version).id);
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Preview and submit" })).toBeDisabled(),
+    );
+    await user.click(screen.getByRole("button", { name: "Re-review" }));
+    await user.click(await screen.findByRole("button", { name: "Open latest draft" }));
+    expect(screen.getByRole("button", { name: "Preview and submit" })).toBeEnabled();
+    expect(backend.detail("pr-482").drafts[1]!.body).toBe(saved.body);
+    expect(backend.detail("pr-482").draft!.id).not.toBe(saved.id);
+  });
+
+  it("does not block another same-head draft just because the latest one is submitted", async () => {
+    const user = mount(undefined, (b) => {
+      const latest = b.detail("pr-482").draft!;
+      b.drafts["pr-482"]![1]!.headSha = latest.headSha;
+      b.submit("pr-482", b.preview("pr-482", latest.id, latest.version).id);
+    });
+    await screen.findByLabelText(/GitHub review body/);
+    expect(screen.getByRole("button", { name: "Preview and submit" })).toBeDisabled();
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "Review draft" }),
+      "draft-482-old",
+    );
+    expect(screen.getByRole("button", { name: "Preview and submit" })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "Preview and submit" }));
+    const dialog = await screen.findByRole("dialog");
+    await within(dialog).findByTestId("payload-body");
+    expect(Object.values(backend.previews).at(-1)!.draftId).toBe("draft-482-old");
+  });
+
+  it("shows failed results without success navigation and permits a fresh preview", async () => {
+    const user = mount({ submitOutcome: "failed" });
+    await screen.findByLabelText(/GitHub review body/);
+    await user.click(screen.getByRole("button", { name: "Preview and submit" }));
+    const dialog = await screen.findByRole("dialog");
+    await within(dialog).findByTestId("payload-body");
+    await user.click(within(dialog).getByRole("button", { name: /Submit request changes/ }));
+    expect(await within(dialog).findByText("The review was not created.")).toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: "Back to Inbox" })).not.toBeInTheDocument();
     await user.click(within(dialog).getByRole("button", { name: "Close" }));
-    expect(
-      await screen.findByText("Nothing has been sent to GitHub.").catch(() => null),
-    ).toBeNull();
+    expect(screen.getByRole("button", { name: "Preview and submit" })).toBeEnabled();
+  });
+
+  it("does not retry a rejected submit request and keeps the draft editable", async () => {
+    let writes = 0;
+    const user = mount(undefined, (b) => {
+      const handle = b.handle.bind(b);
+      b.handle = (method, path, body) => {
+        if (path.endsWith("/submit")) {
+          writes++;
+          throw new MockError(409, "Draft changed after preview", "stale_preview");
+        }
+        return handle(method, path, body);
+      };
+    });
+    const body = await screen.findByLabelText(/GitHub review body/);
+    const original = (body as HTMLTextAreaElement).value;
+    await user.click(screen.getByRole("button", { name: "Preview and submit" }));
+    const dialog = await screen.findByRole("dialog");
+    await within(dialog).findByTestId("payload-body");
+    await user.click(within(dialog).getByRole("button", { name: /Submit request changes/ }));
+    expect(await within(dialog).findByText(/Cannot submit this draft/)).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: /Submit review/ })).toBeDisabled();
+    expect(within(dialog).queryByRole("button", { name: "Back to Inbox" })).not.toBeInTheDocument();
+    expect(writes).toBe(1);
+    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(body).toHaveValue(original);
+    await user.type(body, " manual edit");
+    expect(screen.getByText("Unsaved edits")).toBeInTheDocument();
   });
 
   it("shows an uncertain submission as unresolved, not successful", async () => {
@@ -1090,9 +1238,9 @@ describe("pull request detail", () => {
     await user.click(screen.getByRole("button", { name: "Preview and submit" }));
     const dialog = await screen.findByRole("dialog");
     await within(dialog).findByTestId("payload-body");
-    await user.click(within(dialog).getByRole("checkbox", { name: /I have read/ }));
     await user.click(within(dialog).getByRole("button", { name: /Submit request changes/ }));
     expect(await within(dialog).findByText(/GitHub's answer was lost/)).toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: "Back to Inbox" })).not.toBeInTheDocument();
     await user.click(within(dialog).getByRole("button", { name: "Close" }));
     expect(await screen.findByText("Last submission is unresolved.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Preview and submit" })).toBeDisabled();
