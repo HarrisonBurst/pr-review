@@ -10,6 +10,7 @@ import {
 import { api, RequestError } from "../api/client";
 import { useApp } from "../app-context";
 import { AutomationSettings, BASELINE_NOTE, summarize } from "../components/Automation";
+import { AutoSubmissionSettings } from "../components/AutoSubmissionSettings";
 import { ConnectionSettings } from "../components/Connections";
 import { WorkflowSettings } from "../components/Workflow";
 import { healthTone, Notice, Pill, useToast } from "../components/ui";
@@ -200,6 +201,7 @@ export function SettingsView() {
             These are global defaults. Each pull request can inherit or override them from its own
             page. {BASELINE_NOTE}
           </p>
+          <AutoSubmissionSettings />
         </div>
       </section>
       <WorkflowSettings onModeChange={setMode} />

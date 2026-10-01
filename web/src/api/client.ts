@@ -2,6 +2,10 @@ import type {
   ApiError,
   AppState,
   AutomationOverrides,
+  AutoSubmissionUpdate,
+  AutoSubmissionReenable,
+  HumanReviewAcknowledgment,
+  DraftEditIntent,
   DockerCapabilityDisclosure,
   DockerExclusion,
   DockerInspectRequest,
@@ -75,6 +79,11 @@ export const api = {
   state: () => request<AppState>("/api/state"),
   updateSettings: (update: SettingsUpdate) =>
     request<AppState>("/api/settings", { method: "PATCH", body: JSON.stringify(update) }),
+  updateAutoSubmission: (update: AutoSubmissionUpdate) =>
+    request<AppState>("/api/settings/auto-submission", {
+      method: "PATCH",
+      body: JSON.stringify(update),
+    }),
   integrations: () => request<IntegrationCatalog>("/api/settings/integrations"),
   updateIntegration: (id: string, update: { enabled?: boolean; allowedTools?: string[] }) =>
     request<IntegrationCatalog>(`/api/settings/integrations/${encodeURIComponent(id)}`, {
@@ -151,6 +160,14 @@ export const api = {
       method: "PUT",
       body: JSON.stringify(update),
     }),
+  draftEditIntent: (id: string, intent: DraftEditIntent) =>
+    request<PullRequestDetail>(`${prPath(id)}/draft/edit-intent`, json(intent)),
+  checkAutoSubmission: (id: string) =>
+    request<PullRequestDetail>(`${prPath(id)}/auto-submission/check`, json({})),
+  acknowledgeHumanReview: (id: string, body: HumanReviewAcknowledgment) =>
+    request<PullRequestDetail>(`${prPath(id)}/auto-submission/acknowledge`, json(body)),
+  reenableAutoSubmission: (id: string, body: AutoSubmissionReenable) =>
+    request<PullRequestDetail>(`${prPath(id)}/auto-submission/re-enable`, json(body)),
   createDraft: (id: string) => request<PullRequestDetail>(`${prPath(id)}/drafts`, json({})),
   ask: (id: string, body: QuestionRequest) =>
     request<PullRequestDetail>(`${prPath(id)}/questions`, json(body)),

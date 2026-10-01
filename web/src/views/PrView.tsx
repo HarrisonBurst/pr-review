@@ -17,6 +17,8 @@ import { QuestionsCard } from "../components/Questions";
 import { parseDiff, resolveSelection } from "../lib/diff";
 import { resolveRowRange, type RowRange } from "../lib/selection";
 import { DraftEditor } from "../components/DraftEditor";
+import type { DraftEditing } from "../components/DraftEditGate";
+import { AutoSubmissionBadges, AutoSubmissionCard } from "../components/AutoSubmission";
 import { ProposalCard, RevisionForm } from "../components/Proposals";
 import { RunHistory } from "../components/RunHistory";
 import { SubmissionResult, SubmitModal } from "../components/SubmitModal";
@@ -60,6 +62,19 @@ export function PrView({ id, listed }: { id: string; listed: PullRequest | undef
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [edit, setEdit] = useState<DraftUpdate | null>(null);
   const [remoteChanged, setRemoteChanged] = useState(false);
+  const [intentPending, setIntentPending] = useState<string | null>(null);
+  const [intentError, setIntentError] = useState<{ draftId: string; message: string } | null>(null);
+  const intentEpoch = useRef(0);
+  const intentInFlight = useRef(false);
+  const mounted = useRef(false);
+  const detailRef = useRef(detail);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      intentEpoch.current += 1;
+    };
+  }, []);
   const [conflict, setConflict] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -79,6 +94,20 @@ export function PrView({ id, listed }: { id: string; listed: PullRequest | undef
   const dirty = isDirty(edit, saved);
 
   const adopt = useCallback((next: PullRequestDetail) => {
+    if (!mounted.current) return;
+    const previousDetail = detailRef.current;
+    if (
+      previousDetail &&
+      ((previousDetail.pr.autoSubmission?.version ?? 0) > (next.pr.autoSubmission?.version ?? 0) ||
+        previousDetail.drafts.some(
+          (draft) =>
+            !next.drafts.some(
+              (incoming) => incoming.id === draft.id && incoming.version >= draft.version,
+            ),
+        ))
+    )
+      return;
+    detailRef.current = next;
     const current = editRef.current;
     const previous = savedRef.current;
     setDetail(next);
@@ -92,11 +121,13 @@ export function PrView({ id, listed }: { id: string; listed: PullRequest | undef
     const draft = next.drafts.find((d) => d.id === chosen) ?? null;
     savedRef.current = draft;
     if (!draft) {
+      editRef.current = null;
       setEdit(null);
       return;
     }
     const base = toUpdate(draft);
     if (!isDirty(current, previous)) {
+      editRef.current = base;
       setEdit(base);
       setRemoteChanged(false);
     } else if (draft.version !== current!.version) {
@@ -114,6 +145,8 @@ export function PrView({ id, listed }: { id: string; listed: PullRequest | undef
 
   useEffect(() => {
     setDetail(null);
+    detailRef.current = null;
+    editRef.current = null;
     setEdit(null);
     savedRef.current = null;
     selectedRef.current = null;
@@ -186,12 +219,104 @@ export function PrView({ id, listed }: { id: string; listed: PullRequest | undef
     }
   };
 
+  const beginEditing = async (draft: ReviewDraft): Promise<boolean> => {
+    const known = detailRef.current?.drafts.find((item) => item.id === draft.id);
+    if (!known || known.version !== draft.version) return false;
+    if (draft.id === selectedRef.current && editRef.current?.version !== draft.version) {
+      setIntentError({
+        draftId: draft.id,
+        message:
+          "The saved version changed. Use Load latest, discard my edits to review it before editing again.",
+      });
+      return false;
+    }
+    if (intentInFlight.current) return false;
+    if (known.autoSubmission?.manualHold) {
+      setIntentError(null);
+      return true;
+    }
+    intentInFlight.current = true;
+    const epoch = ++intentEpoch.current;
+    const selection = selectedRef.current;
+    setIntentPending(draft.id);
+    setIntentError(null);
+    try {
+      const next = await api.draftEditIntent(id, { draftId: draft.id, version: draft.version });
+      if (!mounted.current || epoch !== intentEpoch.current || selectedRef.current !== selection)
+        return false;
+      const current = detailRef.current?.drafts.find((item) => item.id === draft.id);
+      const observed = next.drafts.find((item) => item.id === draft.id);
+      if (
+        next.pr.id !== id ||
+        current?.version !== draft.version ||
+        observed?.version !== draft.version ||
+        !observed.autoSubmission?.manualHold
+      ) {
+        setIntentError({
+          draftId: draft.id,
+          message:
+            "Draft changed or edit intent was not confirmed. Reload and review the selected draft before trying again.",
+        });
+        return false;
+      }
+      adopt(next);
+      return !!detailRef.current?.drafts.find((item) => item.id === draft.id)?.autoSubmission
+        ?.manualHold;
+    } catch (e) {
+      if (!mounted.current || epoch !== intentEpoch.current) return false;
+      setIntentError({
+        draftId: draft.id,
+        message: `Editing remains locked: ${e instanceof RequestError ? e.message : String(e)}. Reload and review the draft, then try Begin editing again.`,
+      });
+      if (e instanceof RequestError && e.conflict) await load();
+      return false;
+    } finally {
+      if (mounted.current && epoch === intentEpoch.current) {
+        intentInFlight.current = false;
+        setIntentPending(null);
+      }
+    }
+  };
+
+  const editingFor = (draft: ReviewDraft): DraftEditing => ({
+    allowed:
+      !!draft.autoSubmission?.manualHold &&
+      !intentPending &&
+      intentError?.draftId !== draft.id &&
+      (draft.id !== selectedId || edit?.version === draft.version),
+    pending: intentPending !== null,
+    error: intentError?.draftId === draft.id ? intentError.message : null,
+    begin: () => void beginEditing(draft),
+  });
+  const editable = saved ? editingFor(saved).allowed : false;
+  const changeDraft = (next: DraftUpdate) => {
+    if (
+      !editable ||
+      next.draftId !== selectedRef.current ||
+      next.version !== savedRef.current?.version
+    )
+      return;
+    editRef.current = next;
+    setEdit(next);
+  };
+
   const save = useCallback(async () => {
-    if (!edit) return;
+    if (!edit || !editable) return;
     setBusy("save");
     setConflict(null);
     try {
-      adopt(await api.saveDraft(id, edit));
+      const next = await api.saveDraft(id, edit);
+      const stored = next.drafts.find((draft) => draft.id === edit.draftId);
+      if (
+        stored &&
+        selectedRef.current === stored.id &&
+        editRef.current &&
+        sameDraft(editRef.current, edit)
+      ) {
+        editRef.current = toUpdate(stored);
+        setEdit(editRef.current);
+      }
+      adopt(next);
       toast("Draft saved");
     } catch (e) {
       const err = e instanceof RequestError ? e : null;
@@ -202,10 +327,14 @@ export function PrView({ id, listed }: { id: string; listed: PullRequest | undef
     } finally {
       setBusy(null);
     }
-  }, [edit, id, adopt, load, toast]);
+  }, [edit, editable, id, adopt, load, toast]);
 
   const discard = () => {
-    if (saved) setEdit(toUpdate(saved));
+    if (saved) {
+      editRef.current = toUpdate(saved);
+      setEdit(editRef.current);
+    }
+    setIntentError(null);
     setRemoteChanged(false);
     setConflict(null);
   };
@@ -215,7 +344,8 @@ export function PrView({ id, listed }: { id: string; listed: PullRequest | undef
     savedRef.current = target;
     setSelectedId(target.id);
     const base = toUpdate(target);
-    setEdit(findings ? { ...base, findings: [...base.findings, ...findings] } : base);
+    editRef.current = findings ? { ...base, findings: [...base.findings, ...findings] } : base;
+    setEdit(editRef.current);
     setRemoteChanged(false);
     setConflict(null);
   };
@@ -224,7 +354,13 @@ export function PrView({ id, listed }: { id: string; listed: PullRequest | undef
     if (draftId === selectedId || !detail) return;
     if (dirty && !window.confirm(SWITCH)) return;
     const target = detail.drafts.find((d) => d.id === draftId);
-    if (target) showDraft(target);
+    if (target) {
+      intentEpoch.current += 1;
+      intentInFlight.current = false;
+      setIntentPending(null);
+      setIntentError(null);
+      showDraft(target);
+    }
   };
 
   const files = useMemo(() => parseDiff(detail?.diff ?? ""), [detail?.diff]);
@@ -290,10 +426,12 @@ export function PrView({ id, listed }: { id: string; listed: PullRequest | undef
     if (target.kind !== "open" && target.blocked) return target.blocked;
     if (target.kind === "open") {
       if (!edit) return "No draft is open.";
-      setEdit({ ...edit, findings: [...edit.findings, finding] });
+      if (!editable) return "Begin editing and wait for recorded edit intent first.";
+      changeDraft({ ...edit, findings: [...edit.findings, finding] });
     } else if (target.kind === "switch") {
       const compatible = compatibleDraft(drafts, panel!.resolved.headSha);
       if (!compatible) return "The compatible draft is no longer available.";
+      if (!editingFor(compatible).allowed) return "Begin editing the compatible draft first.";
       showDraft(compatible, [finding]);
     } else {
       setBusy("draft");
@@ -304,7 +442,15 @@ export function PrView({ id, listed }: { id: string; listed: PullRequest | undef
           return "The local draft could not be created for this commit.";
         selectedRef.current = created.id;
         adopt(next);
-        showDraft(created, [finding]);
+        showDraft(created);
+        if (!(await beginEditing(created)))
+          return "The local draft was created, but editing remains locked. Review it and try Begin editing again.";
+        if (selectedRef.current !== created.id)
+          return "The selected draft changed; the comment was not added.";
+        showDraft(
+          detailRef.current!.drafts.find((draft) => draft.id === created.id)!,
+          [finding],
+        );
       } catch (e) {
         return e instanceof RequestError ? e.message : String(e);
       } finally {
@@ -440,6 +586,7 @@ export function PrView({ id, listed }: { id: string; listed: PullRequest | undef
         <div className="pr-title">
           <div className="row wrap">
             <StatusPill status={pr.status} />
+            <AutoSubmissionBadges state={pr.autoSubmission} />
             {pr.state !== "OPEN" && <Pill tone="neutral">{pr.state.toLowerCase()}</Pill>}
             {pr.requested && (
               <Pill tone="info">Review requested {relativeTime(pr.requestedAt)}</Pill>
@@ -539,7 +686,7 @@ export function PrView({ id, listed }: { id: string; listed: PullRequest | undef
           onCheck={() => void check()}
         />
       )}
-      {pr.status === "failed" && !activeRun && (
+      {detail && pr.status === "failed" && !activeRun && (
         <Notice tone="danger" title="The last review failed.">
           {detail?.runs.find((r) => r.status === "failed")?.error ?? "See the run log for details."}
         </Notice>
@@ -588,7 +735,17 @@ export function PrView({ id, listed }: { id: string; listed: PullRequest | undef
                   saved &&
                   void run(
                     "apply",
-                    () => api.applyProposal(id, p.id, saved.version),
+                    async () => {
+                      if (
+                        !(await beginEditing(saved)) ||
+                        selectedRef.current !== saved.id ||
+                        isDirty(editRef.current, savedRef.current)
+                      )
+                        throw new Error(
+                          "Proposal not accepted. Confirm editing of this exact saved draft first.",
+                        );
+                      return api.applyProposal(id, p.id, saved.version);
+                    },
                     "Proposal accepted into draft",
                   )
                 }
@@ -622,8 +779,9 @@ export function PrView({ id, listed }: { id: string; listed: PullRequest | undef
               dirty={dirty}
               remoteChanged={remoteChanged}
               conflict={conflict}
-              saving={busy === "save"}
-              onEdit={setEdit}
+              saving={busy !== null}
+              editing={editingFor(saved)}
+              onEdit={changeDraft}
               onSave={() => void save()}
               onDiscard={discard}
               onSelect={openDraft}
@@ -726,6 +884,16 @@ export function PrView({ id, listed }: { id: string; listed: PullRequest | undef
                       target={addTarget()}
                       draftId={saved?.id ?? null}
                       busy={busy !== null}
+                      editing={(() => {
+                        const target = addTarget();
+                        const draft =
+                          target.kind === "open"
+                            ? saved
+                            : target.kind === "switch"
+                              ? compatibleDraft(drafts, panel.resolved.headSha)
+                              : null;
+                        return draft ? editingFor(draft) : null;
+                      })()}
                       onAsk={ask}
                       onCancel={(qid) => questionAction(() => api.cancelQuestion(id, qid))}
                       onRetry={(qid) => questionAction(() => api.retryQuestion(id, qid))}
@@ -801,6 +969,7 @@ export function PrView({ id, listed }: { id: string; listed: PullRequest | undef
               />
             </div>
           </section>
+          <AutoSubmissionCard key={id} pr={pr} onDetail={adopt} onRefresh={load} />
           {pr.body && <Description body={pr.body} />}
           {detail && detail.questions.length > 0 && (
             <QuestionsCard
