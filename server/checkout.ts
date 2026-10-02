@@ -232,8 +232,21 @@ export class SourceCheckout {
       checkoutDir,
       signal,
     );
+    const recordedHead =
+      headFetch.code === 0
+        ? await this.git(
+            [
+              "rev-parse",
+              "--verify",
+              "--end-of-options",
+              `${source.headSha}^{commit}`,
+            ],
+            checkoutDir,
+            signal,
+          )
+        : null;
     if (
-      headFetch.code !== 0 &&
+      (headFetch.code !== 0 || recordedHead?.code !== 0) &&
       !/(?:authentication failed|could not read (?:username|password)|requested URL returned error: (?:401|403))/i.test(
         headFetch.stderr,
       )

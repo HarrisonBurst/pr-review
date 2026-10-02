@@ -41,7 +41,7 @@ Run `gh auth status` in the same environment that launches the app and verify re
 
 ### Checkout authentication
 
-Reviews and questions acquire their recorded base/head on the host before any harness or container starts. Hardened Git ignores global/system configuration; HTTPS fetches explicitly use the existing `gh auth git-credential` route only for the validated GitHub origin, with redirects and prompts disabled. SSH origins retain their existing trusted SSH transport. Unexpected origins or clone-local transport configuration fail closed; authentication refusals do not retry through the recorded-head fallback. No login or global Git setup is performed.
+Reviews and questions acquire their recorded base/head on the host before any harness or container starts. Hardened Git ignores global/system configuration; HTTPS fetches explicitly use the existing `gh auth git-credential` route only for the validated GitHub origin, with redirects and prompts disabled. SSH origins retain their existing trusted SSH transport. Unexpected origins or clone-local transport configuration fail closed; authentication refusals do not retry through the recorded-head fallback. If a successfully fetched live PR ref no longer contains the captured head, the same scoped transport fetches the captured SHA before verifying and checking out that exact commit. An unavailable captured SHA fails instead of reviewing the newer ref. No login or global Git setup is performed.
 
 This host transport route is separate from native model authentication and app-owned Connections grants. It is operation-only, never stored in checkout Git configuration or transferred to an Isolated reviewer or Docker container. A successful clone or sync does not prove access to the recorded commits.
 
