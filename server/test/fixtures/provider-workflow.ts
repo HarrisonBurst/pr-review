@@ -3,9 +3,15 @@ import path from "node:path";
 import { loadConfig } from "../../config.js";
 import { supportedImage } from "../../execution/policy.js";
 import { inspectDockerCapabilities } from "../../execution/docker-capabilities.js";
-import { dockerApprovalConfirmation } from "../../../shared/contracts.js";
+import {
+  dockerApprovalConfirmation,
+  type HarnessId,
+} from "../../../shared/contracts.js";
 
-export async function workflowFixture(root: string) {
+export async function workflowFixture(
+  root: string,
+  harness: HarnessId = "claude",
+) {
   const bundle = path.join(root, "bundle");
   await mkdir(bundle);
   await copyFile(
@@ -24,7 +30,7 @@ export async function workflowFixture(root: string) {
     JSON.stringify({
       version: 2,
       nested: ["codex"],
-      harness: "claude",
+      harness,
       image: supportedImage,
       bundle,
       auth: "fixture",
@@ -43,8 +49,14 @@ export async function workflowFixture(root: string) {
     workflowConfigPath,
   };
   const inspected = await inspectDockerCapabilities(
-    { ...app, reviewer: { ...app.reviewer, model: "fixture-claude" } },
-    "claude",
+    {
+      ...app,
+      reviewer: {
+        ...app.reviewer,
+        model: harness === "claude" ? "fixture-claude" : "fixture-codex",
+      },
+    },
+    harness,
     { HOME: root },
   );
   const config = JSON.parse(await readFile(workflowConfigPath, "utf8"));

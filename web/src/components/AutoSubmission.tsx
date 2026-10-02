@@ -21,8 +21,14 @@ export function AutoSubmissionBadges({ state }: { state?: AutoSubmissionState })
           </Pill>
         </span>
       )}
-      {(state?.status === "check_needed" || state?.check?.status === "check_needed") && (
-        <Pill tone="warn">Auto-submit paused: check needed</Pill>
+      {state?.status === "uncertain" && <Pill tone="warn">Automatic write uncertain</Pill>}
+      {state?.status === "failed" && (
+        <span title={state.message}>
+          <Pill tone="warn">Auto-submit failed: {state.failure?.step ?? "publication"}</Pill>
+        </span>
+      )}
+      {state?.detection?.status === "unavailable" && (
+        <Pill>Human-request detection unavailable</Pill>
       )}
     </>
   );
@@ -48,13 +54,9 @@ export function AutoSubmissionCard({
       mounted.current = false;
     };
   }, []);
-  const confirmationKey = `${pr.id}:${pr.headSha}:${state?.version}`;
-  const check = state?.check;
-  const clear =
-    check?.status === "clear" && check.coverage.complete && check.headSha === pr.headSha;
-  const acknowledged = state?.evidence.every((item) => item.acknowledgment !== null);
-  const canReenable = state?.reenableRequired && clear && acknowledged;
-
+  const confirmationKey = `${pr.id}:${state?.version}`;
+  const canReenable =
+    state?.reenableRequired && state.evidence.every((item) => item.acknowledgment !== null);
   const action = async (work: () => Promise<PullRequestDetail>) => {
     setBusy(true);
     setError(null);
@@ -79,7 +81,7 @@ export function AutoSubmissionCard({
         action: choice,
       }),
     );
-
+  const detection = state?.detection;
   return (
     <section className="card" aria-labelledby="auto-submit-status-h">
       <div className="card-head">
@@ -101,7 +103,7 @@ export function AutoSubmissionCard({
         {state?.reenableRequired && (
           <Notice tone="warn">
             Automatic submission remains held across new commits. Acknowledging evidence alone never
-            resumes it. Re-enable affects only later automatic full reviews, grants no author action
+            resumes it. Resume affects only later automatic full reviews, grants no author action
             and never clears draft edit holds.
           </Notice>
         )}
@@ -144,60 +146,62 @@ export function AutoSubmissionCard({
             )}
           </div>
         ))}
-        {state?.detection && <p className="faint">{state.detection.message}</p>}
-        {check ? (
+        <p>
+          {detection?.message ??
+            "Human-request detection unavailable; no same-pass observation recorded."}
+        </p>
+        {detection && (
           <details>
-            <summary>Last automatic-submission check: {check.status.replaceAll("_", " ")}</summary>
-            <p>{check.message}</p>
+            <summary>Same-pass observation: {detection.status.replaceAll("_", " ")}</summary>
             <p>
-              Head {shortSha(check.headSha)}
-              {check.headSha !== pr.headSha ? " (older head)" : ""} ·{" "}
-              {relativeTime(check.checkedAt)} · revision{" "}
-              <span className="mono">{check.revision ?? "not available"}</span>
+              Head {shortSha(detection.headSha)}
+              {detection.headSha !== pr.headSha ? " (older head)" : ""} ·{" "}
+              {relativeTime(detection.observedAt)} · context{" "}
+              <span className="mono">{detection.contextVersion ?? "not available"}</span>
             </p>
-            <p>Discussion coverage: {check.coverage.complete ? "complete" : "incomplete"}</p>
-            <ul>
-              {(["comments", "reviews", "threads"] as const).map((kind) => (
-                <li key={kind}>
-                  {kind}: {check.coverage[kind].pages} pages,{" "}
-                  {check.coverage[kind].complete ? "complete" : "incomplete"}
-                  {check.coverage[kind].error && `, ${check.coverage[kind].error}`}
-                </li>
-              ))}
-            </ul>
+            <p>Discussion coverage: {detection.coverage.complete ? "complete" : "incomplete"}</p>
+          </details>
+        )}
+        <p className="faint">
+          Detection uses the same review pass and configured tools, without an extra model call.
+          Unavailable or empty detection is nonblocking and never clears known requests. Private
+          drafting and manual exact preview remain available.
+        </p>
+        {state?.check && (
+          <details>
+            <summary>
+              Historical classifier check: {state.check.status.replaceAll("_", " ")}
+            </summary>
+            <p>{state.check.message}</p>
+            <p>
+              {relativeTime(state.check.checkedAt)} · {shortSha(state.check.headSha)}
+            </p>
             <p>
               Detector:{" "}
-              {check.detector
-                ? `${check.detector.mode} / ${check.detector.harness} / ${check.detector.model} / ${check.detector.profile}`
+              {state.check.detector
+                ? `${state.check.detector.mode} / ${state.check.detector.harness} / ${state.check.detector.model} / ${state.check.detector.profile}`
                 : "not recorded"}
             </p>
           </details>
-        ) : (
-          <p className="faint">No automatic-submission check recorded.</p>
         )}
-        <div>
+        {(state?.status === "uncertain" ||
+          state?.failure?.step === "provenance" ||
+          state?.failure?.step === "reconciliation") && (
           <button
             type="button"
             className="button small"
             disabled={busy}
-            onClick={() => void action(() => api.checkAutoSubmission(pr.id))}
+            onClick={() => void action(() => api.reconcileAutoSubmission(pr.id))}
           >
-            {busy ? "Updating automatic-submission state" : "Check automatic submission now"}
+            Reconcile submission without reposting
           </button>
-        </div>
-        <p className="faint">
-          This explicit check freshly reads the PR head and discussion and may invoke the captured
-          Main model as a contextual classifier where zero-tool execution is supported. Unsupported
-          modes pause before model dispatch without fallback. It never publishes or queues a full
-          review. Opening this panel does not run this check. Private drafting and manual exact
-          preview remain available.
-        </p>
+        )}
         {state?.reenableRequired && (
           <>
             {!canReenable && (
               <p>
-                Check again after acknowledging every evidence version. A complete clear check on
-                the current head is required; the server makes the final decision.
+                Resolve or dismiss every stored evidence version before resuming future reviews. No
+                clear check is required.
               </p>
             )}
             <label className="checkbox">
@@ -222,7 +226,7 @@ export function AutoSubmissionCard({
                 )
               }
             >
-              Re-enable for later reviews
+              Resume for later reviews
             </button>
           </>
         )}

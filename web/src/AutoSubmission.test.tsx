@@ -247,14 +247,15 @@ describe("source-versioned human override UI", () => {
     );
   });
 
-  it("shows check-needed honestly, actual incomplete coverage and null detector, not fabricated evidence", async () => {
-    const user = mount({ autoSubmission: "check-needed", editIntent: "locked" });
+  it("shows nonblocking unavailable detection and incomplete coverage without fabricated evidence or check controls", async () => {
+    const user = mount({ autoSubmission: "unavailable", editIntent: "locked" });
     await screen.findByLabelText(/GitHub review body/);
-    expect(screen.getAllByText("Auto-submit paused: check needed")).toHaveLength(2);
+    expect(screen.getAllByText("Human-request detection unavailable")).toHaveLength(2);
     expect(screen.queryByText("Human review requested")).toBeNull();
     expect(screen.queryByRole("link", { name: "Source on GitHub ↗" })).toBeNull();
-    await user.click(screen.getByText("Last automatic-submission check: check needed"));
-    expect(screen.getByText("Detector: not recorded")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Check automatic submission now" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Resume for later reviews" })).toBeNull();
+    await user.click(screen.getByText("Same-pass observation: unavailable"));
     expect(screen.getByText("Discussion coverage: incomplete")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Preview and submit" })).toBeEnabled();
     await begin(user);
@@ -263,7 +264,7 @@ describe("source-versioned human override UI", () => {
     expect(backend.autoCheckCalls).toBe(0);
   });
 
-  it("acknowledges one exact source version, checks separately, then explicitly re-enables later runs only", async () => {
+  it("acknowledges one exact source version, then explicitly resumes later runs without a clear check", async () => {
     const user = mount({ autoSubmission: "human" });
     await screen.findByLabelText(/GitHub review body/);
     const original = structuredClone(sourceState());
@@ -280,15 +281,14 @@ describe("source-versioned human override UI", () => {
       },
     ]);
     expect(sourceState().reenableRequired).toBe(true);
-    expect(screen.getByRole("button", { name: "Re-enable for later reviews" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Resume for later reviews" })).toBeDisabled();
     expect(backend.autoReenableBodies).toEqual([]);
-    await user.click(screen.getByRole("button", { name: "Check automatic submission now" }));
-    await screen.findByText("Last automatic-submission check: clear");
+    expect(screen.queryByRole("button", { name: "Check automatic submission now" })).toBeNull();
     const consent = screen.getByRole("checkbox", { name: autoSubmissionReenableConfirmation });
     expect(consent).not.toBeChecked();
     await user.click(consent);
     const version = sourceState().version;
-    await user.click(screen.getByRole("button", { name: "Re-enable for later reviews" }));
+    await user.click(screen.getByRole("button", { name: "Resume for later reviews" }));
     await screen.findByText(/SYNTHETIC: re-enabled only for later reviews/);
     expect(backend.autoReenableBodies).toEqual([
       { expectedVersion: version, confirmation: autoSubmissionReenableConfirmation },
@@ -322,8 +322,6 @@ describe("source-versioned human override UI", () => {
     await screen.findByLabelText(/GitHub review body/);
     await user.click(screen.getByRole("button", { name: "Dismiss this evidence" }));
     await screen.findByText(/Retained as acknowledgment history/);
-    await user.click(screen.getByRole("button", { name: "Check automatic submission now" }));
-    await screen.findByText("Last automatic-submission check: clear");
     await user.click(screen.getByRole("checkbox", { name: autoSubmissionReenableConfirmation }));
     const state = sourceState();
     state.version += 1;
@@ -333,17 +331,17 @@ describe("source-versioned human override UI", () => {
       acknowledgment: null,
       source: { ...state.evidence[0]!.source, version: "synthetic-source-v2" },
     });
-    await user.click(screen.getByRole("button", { name: "Re-enable for later reviews" }));
+    await user.click(screen.getByRole("button", { name: "Resume for later reviews" }));
     await screen.findByText("SYNTHETIC: automatic submission state changed");
     expect(sourceState().reenableRequired).toBe(true);
     expect(sourceState().generation).toBe(1);
     expect(
       screen.getByRole("checkbox", { name: autoSubmissionReenableConfirmation }),
     ).not.toBeChecked();
-    expect(screen.getByRole("button", { name: "Re-enable for later reviews" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Resume for later reviews" })).toBeDisabled();
   });
 
-  it("keeps retained evidence across a new head and shows the last check as older-head evidence", async () => {
+  it("keeps retained evidence across a new head and shows the last observation as older-head evidence", async () => {
     mount({ autoSubmission: "human" });
     await screen.findByLabelText(/GitHub review body/);
     backend.prs.find((pr) => pr.id === "pr-482")!.headSha = "synthetic-new-head";
@@ -636,7 +634,7 @@ describe("server-observed editing", () => {
     expect(JSON.parse(payload.textContent!).body).toContain("SYNTHETIC edit after submission.");
     await user.click(dialog.getByRole("button", { name: "Cancel" }));
     expect(backend.submissions["pr-482"]).toEqual([previous]);
-    expect(screen.getByText(/may invoke the captured Main model/)).toBeInTheDocument();
+    expect(screen.getByText(/Detection uses the same review pass/)).toBeInTheDocument();
   });
 
   it.each(["submitting", "uncertain"] as const)(

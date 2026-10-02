@@ -4,12 +4,9 @@ import path from "node:path";
 import type {
   DiscussionSnapshot,
   DiscussionSource,
-  HumanReviewClassification,
-  HumanReviewClassifierInput,
   PullRequest,
   ReviewPayload,
   ReviewResult,
-  ReviewerSettings,
 } from "../../../shared/contracts.js";
 import { autoSubmissionConfirmation } from "../../../shared/contracts.js";
 import {
@@ -21,7 +18,6 @@ import {
 import { loadConfig } from "../../config.js";
 import { ReviewService } from "../../service.js";
 import { revision } from "../../discussion.js";
-import type { HumanReviewClassifier } from "../../human-review.js";
 import type { ReviewInventory } from "../../publication.js";
 import { saveFixtureExecution } from "./current-settings.js";
 
@@ -137,52 +133,52 @@ export class InertPublicationReviewer implements ReviewerAdapter {
     verdict: "COMMENT",
     rationale: "SYNTHETIC inert reviewer",
   };
+  calls = 0;
+  decisions = new Map<string, "requested" | "not_requested" | "uncertain">();
+  fail = false;
+  extensionMode: "normal" | "missing" | "malformed" | "null" = "normal";
   beforeResult?: () => Promise<void>;
   async health() {
     return { status: "ready" as const, message: "SYNTHETIC inert reviewer" };
   }
-  async run(_input: ReviewerInput) {
-    await this.beforeResult?.();
-    return {
-      result: structuredClone(this.result),
-      log: "SYNTHETIC inert reviewer",
-    };
-  }
-}
-
-export class InertPublicationClassifier implements HumanReviewClassifier {
-  calls = 0;
-  beforeResult?: () => Promise<void>;
-  decisions = new Map<string, HumanReviewClassification["decision"]>();
-  fail = false;
-  async classify(
-    input: HumanReviewClassifierInput,
-    settings: ReviewerSettings,
-  ) {
+  async run(input: ReviewerInput) {
     this.calls++;
     await this.beforeResult?.();
-    if (this.fail) throw new Error("SYNTHETIC unsupported classifier");
-    return {
-      output: {
-        version: 1 as const,
-        revision: input.discussion.revision,
-        results: input.discussion.sources
-          .filter((item) => item.provenance === "participant")
-          .map((item) => ({
-            source: { kind: item.kind, id: item.id, version: item.version },
-            decision: this.decisions.get(item.id) ?? "not_requested",
-            quote:
-              this.decisions.get(item.id) === "requested" ? item.body : null,
-            reason: "SYNTHETIC predetermined contextual decision",
-          })),
-      },
-      detector: {
-        profile: "no-tools-1" as const,
-        mode: "separated" as const,
-        harness: "claude" as const,
-        model: settings.model!,
-      },
-    };
+    const result = structuredClone(this.result);
+    if (this.extensionMode !== "missing") {
+      result.humanReviewRequest =
+        this.fail ||
+        this.extensionMode === "null" ||
+        !input.discussion ||
+        [...this.decisions.values()].includes("uncertain")
+          ? null
+          : {
+              version: 1,
+              contextVersion: input.discussion.revision,
+              evidence: input.discussion.sources
+                .filter(
+                  (item) =>
+                    this.decisions.get(item.id) === "requested" &&
+                    item.authorType === "User" &&
+                    item.provenance === "participant",
+                )
+                .map((item) => ({
+                  source: {
+                    kind: item.kind,
+                    id: item.id,
+                    version: item.version,
+                  },
+                  author: item.author,
+                  quote: item.body,
+                  url: item.url,
+                })),
+            };
+      if (this.extensionMode === "malformed")
+        result.humanReviewRequest = {
+          version: 7,
+        } as unknown as ReviewResult["humanReviewRequest"];
+    }
+    return { result, log: "SYNTHETIC inert reviewer" };
   }
 }
 
@@ -196,17 +192,7 @@ export async function publicationFixture(empty = false) {
   const github = new InertPublicationGithub();
   github.current = await github.getPullRequest("demo/repository", 42);
   const reviewer = new InertPublicationReviewer();
-  const classifier = new InertPublicationClassifier();
-  let service = await ReviewService.create(
-    config,
-    github,
-    reviewer,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    classifier,
-  );
+  let service = await ReviewService.create(config, github, reviewer);
   service.queue.schedule = () => {};
   if (empty) service.db.updateSettings({ repository: "" });
   else {
@@ -221,21 +207,11 @@ export async function publicationFixture(empty = false) {
     },
     github,
     reviewer,
-    classifier,
     dataDir,
     config,
     async restart() {
       await service.close();
-      service = await ReviewService.create(
-        config,
-        github,
-        reviewer,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        classifier,
-      );
+      service = await ReviewService.create(config, github, reviewer);
       service.queue.schedule = () => {};
     },
     save(actions: ReviewPayload["event"][] = ["COMMENT"], enabled = true) {
@@ -246,6 +222,10 @@ export async function publicationFixture(empty = false) {
         authors: [{ username: " DEMO-AUTHOR ", actions }],
         ...(enabled ? { confirmation: autoSubmissionConfirmation } : {}),
       });
+    },
+    async manualReview() {
+      await service.manualReview(fixturePrId);
+      await service.processJob(service.db.listJobs("queued")[0]!);
     },
     async automaticReview() {
       service.updateSettings({

@@ -1965,11 +1965,11 @@ export const drafts: Record<string, ReviewDraft[]> = {
 };
 
 export function autoSubmissionState(
-  status: "human_review_requested" | "check_needed" | "held" | "off",
+  status: "human_review_requested" | "unavailable" | "held" | "off",
   headSha: string,
 ): AutoSubmissionState {
-  const human = status !== "check_needed";
-  const complete = status !== "check_needed";
+  const human = status !== "unavailable";
+  const complete = status !== "unavailable";
   const page = {
     pages: complete ? 1 : 0,
     complete,
@@ -1978,12 +1978,12 @@ export function autoSubmissionState(
   return {
     version: 1,
     generation: 1,
-    status,
+    status: status === "unavailable" ? "off" : status,
     draftId: "draft-482",
-    reenableRequired: true,
+    reenableRequired: human,
     message: human
       ? "SYNTHETIC: retained human hold, including across new heads and while settings are off."
-      : "SYNTHETIC: incomplete discussion check; no human intent established.",
+      : "SYNTHETIC: detection unavailable, nonblocking; no human intent established.",
     evidence: human
       ? [
           {
@@ -1997,18 +1997,17 @@ export function autoSubmissionState(
           },
         ]
       : [],
-    check: {
-      status: complete ? "human_review_requested" : "check_needed",
+    check: null,
+    detection: {
+      status: human ? "found" : "unavailable",
+      runId: "synthetic-run",
       headSha,
-      revision: complete ? "synthetic-discussion-v1" : null,
-      checkedAt: t(10),
+      contextVersion: complete ? "1".repeat(64) : null,
+      observedAt: t(10),
       coverage: { complete, comments: { ...page }, reviews: { ...page }, threads: { ...page } },
       message: human
-        ? "SYNTHETIC: exact source quote recorded."
-        : "SYNTHETIC: fetch incomplete; detector not run.",
-      detector: complete
-        ? { profile: "no-tools-1", mode: "separated", harness: "pi", model: "synthetic-detector" }
-        : null,
+        ? "SYNTHETIC: exact source quote recorded in the same pass."
+        : "Human-request detection unavailable; synthetic incomplete discussion is nonblocking.",
     },
   };
 }

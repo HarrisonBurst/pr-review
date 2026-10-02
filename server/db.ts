@@ -141,7 +141,6 @@ interface RunRow {
 }
 
 export interface RunSnapshot {
-  discussion?: DiscussionSnapshot | null;
   pr: PullRequest;
   diff: string;
   diffTruncated: boolean;
@@ -515,6 +514,49 @@ export class AppDatabase {
       pr_id TEXT NOT NULL REFERENCES prs(id), head_sha TEXT NOT NULL, submission_id TEXT NOT NULL,
       PRIMARY KEY (pr_id, head_sha)
     );`);
+    if (!this.columns("runs").has("cancellation_json"))
+      this.sqlite.exec("ALTER TABLE runs ADD COLUMN cancellation_json TEXT");
+    if (!this.columns("meta").has("same_pass_submission")) {
+      this.transaction(() => {
+        this.sqlite.exec(
+          "ALTER TABLE meta ADD COLUMN same_pass_submission INTEGER NOT NULL DEFAULT 1",
+        );
+        for (const pr of this.sqlite
+          .prepare("SELECT id, auto_submission_json FROM prs")
+          .all() as Array<{
+          id: string;
+          auto_submission_json: string | null;
+        }>) {
+          const state = pr.auto_submission_json
+            ? parsed<AutoSubmissionState>(pr.auto_submission_json)
+            : publicationState();
+          const provenanceFailure =
+            state.check?.status === "check_needed" &&
+            /(?:automated inline provenance|automated inline identities)/i.test(
+              state.check.message,
+            );
+          const stopped = this.sqlite
+            .prepare(
+              "SELECT 1 FROM runs WHERE pr_id = ? AND (status IN ('unqueued', 'cancelled') OR json_type(cancellation_json) = 'object')",
+            )
+            .get(pr.id);
+          state.generation++;
+          state.version++;
+          state.reenableRequired =
+            (!!state.evidence.length && state.reenableRequired) ||
+            state.evidence.some((item) => !item.acknowledgment) ||
+            (!!stopped && state.reenableRequired);
+          if (provenanceFailure)
+            state.failure = {
+              step: "provenance",
+              message: state.check!.message,
+              draftId: null,
+              at: state.check!.checkedAt,
+            };
+          this.savePublicationState(pr.id, state);
+        }
+      });
+    }
     if (!this.columns("settings").has("poll_requests")) {
       this.sqlite.exec(`
         ALTER TABLE settings ADD COLUMN poll_commits INTEGER NOT NULL DEFAULT 0;
@@ -572,8 +614,6 @@ export class AppDatabase {
       this.sqlite.exec(
         "ALTER TABLE prs ADD COLUMN imported INTEGER NOT NULL DEFAULT 0",
       );
-    if (!this.columns("runs").has("cancellation_json"))
-      this.sqlite.exec("ALTER TABLE runs ADD COLUMN cancellation_json TEXT");
     if (!this.columns("runs").has("progress_json"))
       this.sqlite.exec("ALTER TABLE runs ADD COLUMN progress_json TEXT");
     if (!this.columns("runs").has("integration_json"))
@@ -1298,24 +1338,29 @@ export class AppDatabase {
       .run(json(discussion), runId);
   }
 
+  getRunDiscussion(runId: string): DiscussionSnapshot | null | undefined {
+    const row = this.sqlite
+      .prepare("SELECT discussion_json FROM run_snapshots WHERE run_id = ?")
+      .get(runId) as { discussion_json: string | null } | undefined;
+    return row?.discussion_json
+      ? parsed<DiscussionSnapshot | null>(row.discussion_json)
+      : undefined;
+  }
+
   getRunSnapshot(runId: string): RunSnapshot | null {
     const row = this.sqlite
       .prepare(
-        "SELECT pr_json, diff, diff_truncated, discussion_json FROM run_snapshots WHERE run_id = ?",
+        "SELECT pr_json, diff, diff_truncated FROM run_snapshots WHERE run_id = ?",
       )
       .get(runId) as
       | {
           pr_json: string;
           diff: string;
           diff_truncated: number;
-          discussion_json: string | null;
         }
       | undefined;
     return row
       ? {
-          discussion: row.discussion_json
-            ? parsed<DiscussionSnapshot | null>(row.discussion_json)
-            : undefined,
           pr: parsed<PullRequest>(row.pr_json),
           diff: row.diff,
           diffTruncated: row.diff_truncated === 1,

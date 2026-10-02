@@ -842,6 +842,7 @@ export function normalizeAutoSubmissionAuthors(
 }
 
 export interface AutomaticReviewProvenance {
+  outputContract?: "1.1";
   repository: string;
   policyVersion: number;
   consentedAt: string;
@@ -964,10 +965,10 @@ export interface AutoSubmissionState {
     | "off"
     | "not_authorized"
     | "manual_only"
-    | "checking"
     | "eligible"
     | "human_review_requested"
-    | "check_needed"
+    | "failed"
+    | "uncertain"
     | "held"
     | "submitted";
   message: string;
@@ -975,6 +976,12 @@ export interface AutoSubmissionState {
   evidence: HumanReviewEvidence[];
   check: HumanReviewCheck | null;
   detection?: HumanReviewDetection | null;
+  failure?: {
+    step: "publication" | "provenance" | "reconciliation";
+    message: string;
+    draftId: string | null;
+    at: string;
+  } | null;
   reenableRequired: boolean;
 }
 
@@ -1014,7 +1021,7 @@ export type SubmissionAuthority =
       draftId: string;
       draftVersion: number;
       headSha: string;
-      discussionRevision: string;
+      discussionRevision: string | null;
     };
 
 export interface AppSettings {

@@ -56,7 +56,7 @@ if (!address || typeof address === "string")
 f.config.port = address.port;
 console.log(`SYNTHETIC inert fixture: http://127.0.0.1:${address.port}`);
 console.log(
-  "Commands: manual, automatic, human, clear, coverage-fail, intent hold|release|fail|normal, status, quit",
+  "Commands: manual, automatic, human, clear, unavailable, coverage-fail, intent hold|release|fail|normal, status, quit",
 );
 const input = createInterface({ input: process.stdin });
 try {
@@ -79,11 +79,14 @@ try {
     } else if (command === "automatic") {
       await f.automaticReview();
       f.service.updateSettings({ automation: automationOff });
-    } else if (["human", "clear", "coverage-fail"].includes(command)) {
+    } else if (
+      ["human", "clear", "unavailable", "coverage-fail"].includes(command)
+    ) {
       f.github.sources = command === "human" ? [fixtureSource()] : [];
       f.github.complete = command !== "coverage-fail";
-      f.classifier.decisions.set("synthetic-comment", "requested");
-      await f.service.checkAutoSubmission(fixturePrId);
+      f.reviewer.extensionMode = command === "unavailable" ? "null" : "normal";
+      f.reviewer.decisions.set("synthetic-comment", "requested");
+      await f.manualReview();
     } else if (command === "status") {
       const detail = f.service.db.getPr(fixturePrId)
         ? f.service.getDetail(fixturePrId)
@@ -92,6 +95,8 @@ try {
         JSON.stringify({
           synthetic: true,
           nativeDispatches: 0,
+          reviewerCalls: f.reviewer.calls,
+          detection: detail?.pr.autoSubmission?.detection?.status ?? null,
           writes: f.github.writes.length,
           runs: detail?.runs.length ?? 0,
           draftVersion: detail?.draft?.version ?? null,

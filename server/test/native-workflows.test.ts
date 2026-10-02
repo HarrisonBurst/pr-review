@@ -703,6 +703,7 @@ for (const harness of ["claude", "codex", "pi"] as const)
         findings: [],
         verdict: "COMMENT",
         rationale: "Explicit fixture",
+        humanReviewRequest: null,
       };
       let calls = 0;
       let checked = false;

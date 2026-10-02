@@ -47,19 +47,32 @@ test("same-pass found evidence and pinned context persist independently from the
     assert.equal(detail.pr.autoSubmission?.evidence.length, 1);
     assert.equal(detail.pr.autoSubmission?.status, "human_review_requested");
     assert.equal(
-      f.service.db.getRunSnapshot(run.id)?.discussion?.revision,
+      f.service.db.getRunDiscussion(run.id)?.revision,
       run.result?.humanReviewRequest?.contextVersion,
     );
     assert.equal("humanReviewRequest" in detail.draft!, false);
+    const pinned = structuredClone(f.service.db.getRunDiscussion(run.id));
+    const snapshot = f.service.db.getRunSnapshot(run.id);
+    f.service.db.captureRunDiscussion(run.id, null);
+    assert.deepEqual(f.service.db.getRunDiscussion(run.id), pinned);
+    f.github.sources = [fixtureSource("SYNTHETIC changed conversation")];
+    f.service.revise(fixturePrId, {
+      draftId: detail.draft!.id,
+      draftVersion: detail.draft!.version,
+      instructions: "SYNTHETIC revise with the original capture",
+    });
+    const revisionJob = f.service.db.listJobs("queued")[0]!;
+    assert.deepEqual(f.service.db.getRunDiscussion(revisionJob.run_id), pinned);
+    await f.service.processJob(revisionJob);
+    assert.deepEqual(f.service.db.getRunSnapshot(run.id), snapshot);
+    assert.deepEqual(f.service.db.getRunDiscussion(revisionJob.run_id), pinned);
     await f.restart();
     assert.deepEqual(
       f.service.getDetail(fixturePrId).pr.autoSubmission?.evidence,
       detail.pr.autoSubmission?.evidence,
     );
-    assert.deepEqual(
-      f.service.db.getRunSnapshot(run.id)?.discussion,
-      f.service.db.getRunSnapshot(run.id)?.discussion,
-    );
+    assert.deepEqual(f.service.db.getRunDiscussion(run.id), pinned);
+    assert.deepEqual(f.service.db.getRunDiscussion(revisionJob.run_id), pinned);
     assert.equal(f.github.writes.length, 0);
   } finally {
     await f.close();
