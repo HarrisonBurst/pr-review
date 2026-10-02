@@ -1023,6 +1023,7 @@ export class DemoGithubAdapter implements GithubAdapter {
 }
 
 export interface ReviewerInput {
+  discussion?: DiscussionSnapshot | null;
   pr: PullRequest;
   diff: string;
   draft: {

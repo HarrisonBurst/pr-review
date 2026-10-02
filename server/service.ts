@@ -11,6 +11,7 @@ import {
   type AutoSubmissionReenable,
   type HumanReviewAcknowledgment,
   type AutomaticReviewProvenance,
+  type DiscussionSnapshot,
   type DraftEditIntent,
   automationOff,
   inboxEligible,
@@ -72,6 +73,7 @@ import {
   type ReviewInventory,
 } from "./publication.js";
 import { emptyCoverage, revision } from "./discussion.js";
+import { bindHumanReviewRequest } from "./review-output.js";
 import { ConfiguredWorkflows } from "./execution/workflows.js";
 import { ReadProviders, importReadProviders } from "./read-providers.js";
 import {
@@ -1651,8 +1653,9 @@ export class ReviewService {
         throw new Error(
           "Discussion acquisition is unavailable for this adapter; no clear scan inferred",
         );
-      discussion = await this.github.discussion(remote.pr);
+      discussion = await this.captureDiscussion(remote.pr);
       controller.signal.throwIfAborted();
+      if (!discussion) throw new Error("Discussion acquisition unavailable");
       if (
         discussion.prId !== prId ||
         discussion.headSha !== remote.pr.headSha ||
@@ -1661,69 +1664,6 @@ export class ReviewService {
         throw new Error(
           "Discussion acquisition is incomplete or targets another head",
         );
-      const submissions = this.db
-        .listSubmissions(prId)
-        .filter(
-          (item) =>
-            item.status === "submitted" && item.authority?.kind === "automatic",
-        );
-      for (const submission of submissions) {
-        if (
-          discussion.sources.some(
-            (source) =>
-              source.kind === "inline_comment" &&
-              source.reviewId === submission.githubReviewId,
-          ) &&
-          !this.db.getRecovery(submission.previewId)?.commentIds
-        ) {
-          await this.captureAutomaticCommentIds(prId, submission);
-          controller.signal.throwIfAborted();
-        }
-      }
-      const nativeVersions = discussion.sources.map((item) => ({
-        kind: item.kind,
-        id: item.id,
-        version: item.version,
-        threadId: item.threadId,
-      }));
-      for (const source of discussion.sources) {
-        const automated = submissions.find(
-          (item) =>
-            item.githubReviewId ===
-            (source.kind === "review" ? source.id : source.reviewId),
-        );
-        const recovery = automated
-          ? this.db.getRecovery(automated.previewId)
-          : null;
-        if (
-          automated &&
-          recovery?.writer.toLowerCase() === source.author.toLowerCase() &&
-          (source.kind === "review"
-            ? automated.payload.body === source.body
-            : recovery.commentIds?.includes(source.id) &&
-              automated.payload.comments.some(
-                (item) => item.body === source.body,
-              ))
-        )
-          source.provenance = "app_automatic";
-        source.version = revision({
-          source: source.version,
-          title: remote.pr.title,
-          body: remote.pr.body,
-          context: nativeVersions.filter((item) =>
-            source.threadId
-              ? item.threadId === source.threadId
-              : item.threadId === null,
-          ),
-        });
-      }
-      discussion.revision = revision({
-        head: discussion.headSha,
-        title: remote.pr.title,
-        body: remote.pr.body,
-        sources: discussion.sources,
-        coverage: discussion.coverage,
-      });
       if (
         discussion.sources.some(
           (source) =>
@@ -1832,6 +1772,145 @@ export class ReviewService {
     } finally {
       this.reviewAborts.delete(`scan:${prId}`);
     }
+  }
+
+  private async captureDiscussion(
+    pr: PullRequest,
+  ): Promise<DiscussionSnapshot | null> {
+    try {
+      if (!this.github.discussion) return null;
+      const discussion = await this.github.discussion(pr);
+      if (discussion.prId !== pr.id || discussion.headSha !== pr.headSha)
+        return null;
+      const submissions = this.db
+        .listSubmissions(pr.id)
+        .filter(
+          (item) =>
+            item.status === "submitted" && item.authority?.kind === "automatic",
+        );
+      for (const submission of submissions) {
+        if (
+          discussion.sources.some(
+            (source) =>
+              source.kind === "inline_comment" &&
+              source.reviewId === submission.githubReviewId,
+          ) &&
+          !this.db.getRecovery(submission.previewId)?.commentIds
+        )
+          await this.captureAutomaticCommentIds(pr.id, submission);
+      }
+      const nativeVersions = discussion.sources.map((item) => ({
+        kind: item.kind,
+        id: item.id,
+        version: item.version,
+        threadId: item.threadId,
+      }));
+      for (const source of discussion.sources) {
+        const automated = submissions.find(
+          (item) =>
+            item.githubReviewId ===
+            (source.kind === "review" ? source.id : source.reviewId),
+        );
+        const recovery = automated
+          ? this.db.getRecovery(automated.previewId)
+          : null;
+        if (
+          automated &&
+          recovery?.writer.toLowerCase() === source.author.toLowerCase() &&
+          (source.kind === "review"
+            ? automated.payload.body === source.body
+            : recovery.commentIds?.includes(source.id) &&
+              automated.payload.comments.some(
+                (item) => item.body === source.body,
+              ))
+        )
+          source.provenance = "app_automatic";
+        source.version = revision({
+          source: source.version,
+          title: pr.title,
+          body: pr.body,
+          context: nativeVersions.filter((item) =>
+            source.threadId
+              ? item.threadId === source.threadId
+              : item.threadId === null,
+          ),
+        });
+      }
+      discussion.revision = revision({
+        head: discussion.headSha,
+        title: pr.title,
+        body: pr.body,
+        sources: discussion.sources,
+        coverage: discussion.coverage,
+      });
+      return Buffer.byteLength(
+        JSON.stringify({
+          pr: { title: pr.title, body: pr.body, author: pr.author },
+          discussion,
+        }),
+      ) <= 200000
+        ? discussion
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private recordHumanReview(
+    run: ReviewRun,
+    result: ReviewResult,
+    discussion: DiscussionSnapshot | null | undefined,
+    diagnostics: string[],
+  ): void {
+    const state = this.db.getPublicationState(run.prId);
+    const observation = result.humanReviewRequest;
+    let changed = false;
+    for (const item of observation?.evidence ?? []) {
+      if (
+        state.evidence.some(
+          (evidence) => revision(evidence.source) === revision(item.source),
+        )
+      )
+        continue;
+      state.evidence.push({
+        ...item,
+        id: id(),
+        detectedAt: now(),
+        acknowledgment: null,
+      });
+      changed = true;
+    }
+    if (changed) {
+      state.version++;
+      state.generation++;
+      state.reenableRequired = true;
+    }
+    const complete =
+      discussion?.coverage.complete &&
+      discussion.sources.every(
+        (source) =>
+          source.authorType !== "unknown" && source.provenance !== "unknown",
+      );
+    const found = !!observation?.evidence.length;
+    state.detection = {
+      status: found
+        ? "found"
+        : observation && complete
+          ? "not_found"
+          : "unavailable",
+      runId: run.id,
+      headSha: run.headSha,
+      contextVersion:
+        observation?.contextVersion ?? discussion?.revision ?? null,
+      observedAt: now(),
+      coverage: discussion?.coverage ?? emptyCoverage(),
+      message: found
+        ? `Human review requested in supplied context${complete ? "" : "; unread discussion detection unavailable"}`
+        : observation && complete
+          ? "No human-review request noticed in supplied context; not a clear certificate"
+          : `Human-request detection unavailable${diagnostics.length ? `: ${diagnostics.join("; ")}` : ": supplied discussion is incomplete or unavailable"}`,
+    };
+    this.db.savePublicationState(run.prId, state);
   }
 
   private async captureAutomaticCommentIds(
@@ -3401,7 +3480,13 @@ export class ReviewService {
           "draft_conflict",
           "revision source draft changed before execution",
         );
+      if (snapshot.discussion === undefined) {
+        snapshot.discussion = await this.captureDiscussion(snapshot.pr);
+        controller.signal.throwIfAborted();
+        this.db.captureRunDiscussion(run.id, snapshot.discussion);
+      }
       const input: ReviewerInput = {
+        discussion: snapshot.discussion,
         pr: snapshot.pr,
         diff: snapshot.diff,
         draft: draft
@@ -3427,6 +3512,17 @@ export class ReviewService {
       controller.signal.throwIfAborted();
       tracker.phase("finalize", "running");
       const result = validateReviewResult(output.result);
+      const extension = bindHumanReviewRequest(
+        output.result.humanReviewRequest,
+        snapshot.discussion,
+      );
+      result.humanReviewRequest = extension.observation;
+      this.recordHumanReview(
+        run,
+        result,
+        snapshot.discussion,
+        extension.diagnostics,
+      );
       tracker.phase(
         "finalize",
         "completed",

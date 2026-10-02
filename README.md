@@ -67,7 +67,7 @@ The contextual detector currently supports captured Isolated Claude Main only. P
 
 Select a trusted absolute `.md` entry in Settings, with its required companion resources available. The app supplies the final JSON schema and output instructions, so your skill does not need to repeat them. It should allow that output rather than insist on a prose-only final answer.
 
-Full reviews and AI revisions must return one JSON object with `overview`, `body`, `findings`, `verdict` and `rationale`. Markdown inside the text fields is fine; no particular headings are required. `overview`, finding `evidence` and `rationale` stay private, while `body` and included finding bodies can enter the confirmed GitHub payload.
+New full reviews and AI revisions use output contract 1.1: one JSON object with `overview`, `body`, `findings`, `verdict`, `rationale` and nullable `humanReviewRequest` from the same generation pass. Core-valid legacy or malformed extension output stays valid with advisory unavailable detection. Markdown inside the text fields is fine; no particular headings are required. `overview`, finding `evidence` and `rationale` stay private, while `body` and included finding bodies can enter the confirmed GitHub payload.
 
 A minimal synthetic final result, not a required skill template:
 
@@ -88,7 +88,8 @@ A minimal synthetic final result, not a required skill template:
     }
   ],
   "verdict": "REQUEST_CHANGES",
-  "rationale": "One introduced blocking defect in cancellation."
+  "rationale": "One introduced blocking defect in cancellation.",
+  "humanReviewRequest": null
 }
 ```
 

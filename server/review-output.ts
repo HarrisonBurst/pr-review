@@ -1,6 +1,8 @@
 import type {
   CommentSide,
+  DiscussionSnapshot,
   Finding,
+  HumanReviewRequest,
   ReviewResult,
   ReviewVerdict,
   Severity,
@@ -94,6 +96,154 @@ export function validateResultFinding(item: unknown, label: string): Finding {
   };
 }
 
+export function humanReviewExtension(value: unknown): {
+  observation: HumanReviewRequest | null;
+  diagnostics: string[];
+} {
+  try {
+    if (value === undefined)
+      throw new Error("humanReviewRequest is missing; detection unavailable");
+    if (value === null)
+      throw new Error("humanReviewRequest is null; detection unavailable");
+    if (Buffer.byteLength(JSON.stringify(value), "utf8") > 200000)
+      throw new Error("humanReviewRequest exceeds the 200000-byte limit");
+    const exact = (value: unknown, keys: string[], label: string) => {
+      const record = object(value, label);
+      if (
+        Object.keys(record).length !== keys.length ||
+        keys.some((key) => !(key in record))
+      )
+        throw new Error(`${label} must contain exactly ${keys.join(", ")}`);
+      return record;
+    };
+    const bounded = (
+      value: Record<string, unknown>,
+      key: string,
+      label: string,
+      max: number,
+      bytes = false,
+    ) => {
+      const text = stringField(value, key, label);
+      if (
+        !text.trim() ||
+        (bytes ? Buffer.byteLength(text, "utf8") : text.length) > max
+      )
+        throw new Error(
+          `${label}.${key} must be nonempty and at most ${max} ${bytes ? "UTF-8 bytes" : "characters"}`,
+        );
+      return text;
+    };
+    const hash = (
+      value: Record<string, unknown>,
+      key: string,
+      label: string,
+    ) => {
+      const text = stringField(value, key, label);
+      if (!/^[a-f0-9]{64}$/.test(text))
+        throw new Error(`${label}.${key} must be a lowercase SHA256`);
+      return text;
+    };
+    const request = exact(
+      value,
+      ["version", "contextVersion", "evidence"],
+      "humanReviewRequest",
+    );
+    if (request.version !== 1)
+      throw new Error("humanReviewRequest.version is unsupported");
+    const contextVersion = hash(
+      request,
+      "contextVersion",
+      "humanReviewRequest",
+    );
+    if (!Array.isArray(request.evidence) || request.evidence.length > 1000)
+      throw new Error(
+        "humanReviewRequest.evidence must contain at most 1000 entries",
+      );
+    const seen = new Set<string>();
+    const evidence = request.evidence.map((item, index) => {
+      const label = `humanReviewRequest.evidence[${index}]`;
+      const entry = exact(item, ["source", "author", "quote", "url"], label);
+      const source = exact(
+        entry.source,
+        ["kind", "id", "version"],
+        `${label}.source`,
+      );
+      if (
+        !["comment", "review", "inline_comment"].includes(source.kind as string)
+      )
+        throw new Error(`${label}.source.kind is invalid`);
+      const reference = {
+        kind: source.kind as HumanReviewRequest["evidence"][number]["source"]["kind"],
+        id: bounded(source, "id", `${label}.source`, 100),
+        version: hash(source, "version", `${label}.source`),
+      };
+      const key = JSON.stringify(reference);
+      if (seen.has(key))
+        throw new Error(
+          "humanReviewRequest.evidence source/version entries must be unique",
+        );
+      seen.add(key);
+      return {
+        source: reference,
+        author: bounded(entry, "author", label, 100),
+        quote: bounded(entry, "quote", label, 20000, true),
+        url: bounded(entry, "url", label, 2048),
+      };
+    });
+    return {
+      observation: { version: 1, contextVersion, evidence },
+      diagnostics: [],
+    };
+  } catch (error) {
+    return {
+      observation: null,
+      diagnostics: [error instanceof Error ? error.message : String(error)],
+    };
+  }
+}
+
+export function bindHumanReviewRequest(
+  value: unknown,
+  discussion: DiscussionSnapshot | null | undefined,
+): ReturnType<typeof humanReviewExtension> {
+  const extension = humanReviewExtension(value);
+  if (!extension.observation) return extension;
+  if (
+    !discussion ||
+    extension.observation.contextVersion !== discussion.revision
+  )
+    return {
+      observation: null,
+      diagnostics: [
+        "Human-request context version does not match the captured discussion",
+      ],
+    };
+  for (const evidence of extension.observation.evidence) {
+    const source = discussion.sources.find(
+      (item) =>
+        item.kind === evidence.source.kind &&
+        item.id === evidence.source.id &&
+        item.version === evidence.source.version,
+    );
+    if (
+      !source ||
+      source.authorType !== "User" ||
+      source.provenance !== "participant" ||
+      source.author.endsWith("[bot]") ||
+      source.author !== evidence.author ||
+      source.url !== evidence.url ||
+      !source.body.includes(evidence.quote)
+    )
+      return {
+        observation: null,
+        diagnostics: [
+          "Human-request source identity, participant, author, URL or verbatim quotation does not match captured data",
+        ],
+      };
+  }
+  return extension;
+}
+
 export function validateReviewResult(value: unknown): ReviewResult {
   const result = object(value, "result");
   const verdict = stringField(result, "verdict", "result") as ReviewVerdict;
@@ -111,14 +261,61 @@ export function validateReviewResult(value: unknown): ReviewResult {
     findings,
     verdict,
     rationale: stringField(result, "rationale", "result"),
+    humanReviewRequest: humanReviewExtension(result.humanReviewRequest)
+      .observation,
   };
 }
 
 export const reviewSchema = {
   type: "object",
   additionalProperties: true,
-  required: ["overview", "body", "findings", "verdict", "rationale"],
+  required: [
+    "overview",
+    "body",
+    "findings",
+    "verdict",
+    "rationale",
+    "humanReviewRequest",
+  ],
   properties: {
+    humanReviewRequest: {
+      anyOf: [
+        { type: "null" },
+        {
+          type: "object",
+          additionalProperties: false,
+          required: ["version", "contextVersion", "evidence"],
+          properties: {
+            version: { type: "integer", enum: [1] },
+            contextVersion: { type: "string", pattern: "^[a-f0-9]{64}$" },
+            evidence: {
+              type: "array",
+              maxItems: 1000,
+              items: {
+                type: "object",
+                additionalProperties: false,
+                required: ["source", "author", "quote", "url"],
+                properties: {
+                  source: {
+                    type: "object",
+                    additionalProperties: false,
+                    required: ["kind", "id", "version"],
+                    properties: {
+                      kind: { enum: ["comment", "review", "inline_comment"] },
+                      id: { type: "string", minLength: 1, maxLength: 100 },
+                      version: { type: "string", pattern: "^[a-f0-9]{64}$" },
+                    },
+                  },
+                  author: { type: "string", minLength: 1, maxLength: 100 },
+                  quote: { type: "string", minLength: 1, maxLength: 20000 },
+                  url: { type: "string", minLength: 1, maxLength: 2048 },
+                },
+              },
+            },
+          },
+        },
+      ],
+    },
     overview: { type: "string" },
     body: { type: "string" },
     verdict: { enum: ["COMMENT", "APPROVE", "REQUEST_CHANGES"] },

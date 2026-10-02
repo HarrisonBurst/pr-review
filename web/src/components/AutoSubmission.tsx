@@ -144,6 +144,7 @@ export function AutoSubmissionCard({
             )}
           </div>
         ))}
+        {state?.detection && <p className="faint">{state.detection.message}</p>}
         {check ? (
           <details>
             <summary>Last automatic-submission check: {check.status.replaceAll("_", " ")}</summary>

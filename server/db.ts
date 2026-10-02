@@ -7,6 +7,7 @@ import {
 import type {
   AutoSubmissionPolicy,
   AutoSubmissionState,
+  DiscussionSnapshot,
 } from "../shared/contracts.js";
 import { emptyProgress, interruptProgress, pendingEntry } from "./progress.js";
 import {
@@ -140,6 +141,7 @@ interface RunRow {
 }
 
 export interface RunSnapshot {
+  discussion?: DiscussionSnapshot | null;
   pr: PullRequest;
   diff: string;
   diffTruncated: boolean;
@@ -505,6 +507,7 @@ export class AppDatabase {
       ["drafts", "auto_submission_json"],
       ["previews", "authority_json"],
       ["previews", "recovery_json"],
+      ["run_snapshots", "discussion_json"],
     ])
       if (!this.columns(table!).has(column!))
         this.sqlite.exec(`ALTER TABLE ${table} ADD COLUMN ${column} TEXT`);
@@ -1284,15 +1287,35 @@ export class AppDatabase {
       );
   }
 
+  captureRunDiscussion(
+    runId: string,
+    discussion: DiscussionSnapshot | null,
+  ): void {
+    this.sqlite
+      .prepare(
+        "UPDATE run_snapshots SET discussion_json = ? WHERE run_id = ? AND discussion_json IS NULL",
+      )
+      .run(json(discussion), runId);
+  }
+
   getRunSnapshot(runId: string): RunSnapshot | null {
     const row = this.sqlite
       .prepare(
-        "SELECT pr_json, diff, diff_truncated FROM run_snapshots WHERE run_id = ?",
+        "SELECT pr_json, diff, diff_truncated, discussion_json FROM run_snapshots WHERE run_id = ?",
       )
       .get(runId) as
-      { pr_json: string; diff: string; diff_truncated: number } | undefined;
+      | {
+          pr_json: string;
+          diff: string;
+          diff_truncated: number;
+          discussion_json: string | null;
+        }
+      | undefined;
     return row
       ? {
+          discussion: row.discussion_json
+            ? parsed<DiscussionSnapshot | null>(row.discussion_json)
+            : undefined,
           pr: parsed<PullRequest>(row.pr_json),
           diff: row.diff,
           diffTruncated: row.diff_truncated === 1,

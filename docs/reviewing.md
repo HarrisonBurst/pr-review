@@ -204,7 +204,7 @@ If the PR head changes while a selection is open, the app clears the selection w
 
 ## Review output and progress
 
-[Output contract 1.0](review-output.md) and `npm run check:review-output < candidate.json` use the same validator as final ingestion. Current native adapters expose the read-only `check_review_output` tool. Passing the format check proves neither correctness nor permission to publish.
+[Output contract 1.1](review-output.md) and `npm run check:review-output < candidate.json` use the same validator as final ingestion. Current native adapters expose the read-only `check_review_output` tool. Passing the format check proves neither correctness nor permission to publish.
 
 Custom overview Markdown and optional anchor defaults remain supported. Each result requires a complete authoritative native stream and valid canonical output. Malformed, truncated or oversized results never count as success.
 

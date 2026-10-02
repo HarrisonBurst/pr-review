@@ -15,6 +15,7 @@ import { autoSubmissionConfirmation } from "../../../shared/contracts.js";
 import {
   DemoGithubAdapter,
   type ReviewerAdapter,
+  type ReviewerInput,
   type RemotePullRequest,
 } from "../../adapters.js";
 import { loadConfig } from "../../config.js";
@@ -140,7 +141,7 @@ export class InertPublicationReviewer implements ReviewerAdapter {
   async health() {
     return { status: "ready" as const, message: "SYNTHETIC inert reviewer" };
   }
-  async run() {
+  async run(_input: ReviewerInput) {
     await this.beforeResult?.();
     return {
       result: structuredClone(this.result),

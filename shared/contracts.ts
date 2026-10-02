@@ -911,6 +911,27 @@ export interface HumanReviewClassifierOutput {
   results: HumanReviewClassification[];
 }
 
+export interface HumanReviewRequest {
+  version: 1;
+  contextVersion: string;
+  evidence: Array<{
+    source: DiscussionSourceVersion;
+    author: string;
+    quote: string;
+    url: string;
+  }>;
+}
+
+export interface HumanReviewDetection {
+  status: "found" | "not_found" | "unavailable";
+  runId: string;
+  headSha: string;
+  contextVersion: string | null;
+  observedAt: string;
+  coverage: DiscussionCoverage;
+  message: string;
+}
+
 export interface HumanReviewEvidence {
   id: string;
   source: DiscussionSourceVersion;
@@ -953,6 +974,7 @@ export interface AutoSubmissionState {
   draftId: string | null;
   evidence: HumanReviewEvidence[];
   check: HumanReviewCheck | null;
+  detection?: HumanReviewDetection | null;
   reenableRequired: boolean;
 }
 
@@ -1121,12 +1143,13 @@ export function inboxEligible(pr: PullRequest): boolean {
   );
 }
 
-export const reviewOutputVersion = "1.0";
+export const reviewOutputVersion = "1.1";
 
 export interface ReviewOutputCheck {
   version: typeof reviewOutputVersion;
   status: "valid" | "invalid";
   diagnostics: string[];
+  extensionDiagnostics: string[];
 }
 
 export interface ReviewResult {
@@ -1135,6 +1158,7 @@ export interface ReviewResult {
   findings: Finding[];
   verdict: ReviewVerdict;
   rationale: string;
+  humanReviewRequest?: HumanReviewRequest | null;
 }
 
 export type RunPhaseId =
