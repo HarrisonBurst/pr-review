@@ -1,31 +1,37 @@
-name: CI
+name: Cleanup diagnostics
 
 on:
   push:
-  pull_request:
+    branches:
+      - shephrd/task_f7ae1991ff3c-runner-diagnostics
 
 permissions:
   contents: read
 
-concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
-  checks:
+  paired-diagnostics:
     runs-on: macos-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 24
+          node-version: 24.20.0
           cache: npm
       - run: npm ci
-      - run: npm run format:check
-      - run: npx --no-install prettier --check CONTRIBUTING.md SECURITY.md docs/publication-readiness.md .github
-      - run: npm run typecheck
-      - run: npm test
-      - run: npm run build
+      - run: git fetch origin 6e75ef849503a0bb683940a7c96195cdd31cac28
+      - run: node scripts/cleanup-diagnostics/run.mjs
+        env:
+          CLEANUP_DIAGNOSTIC_OUTPUT: ${{ runner.temp }}/cleanup-diagnostics
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: cleanup-diagnostics
+          retention-days: 7
+          path: |
+            ${{ runner.temp }}/cleanup-diagnostics/*.json
+            ${{ runner.temp }}/cleanup-diagnostics/*.jsonl
+            ${{ runner.temp }}/cleanup-diagnostics/*-test.log
