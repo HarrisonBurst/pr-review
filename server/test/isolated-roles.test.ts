@@ -544,6 +544,45 @@ test("invalid role selections never change settings; nested mentions alone are o
   }
 });
 
+test("Isolated cancellation preserves owned shutdown refusal instead of replacing it with the abort reason", async () => {
+  const f = await fixture();
+  try {
+    await f.send("/settings/harness", f.selection, "PATCH");
+    await f.send("/sync", {});
+    await f.send(`${f.pr}/review`, {});
+    const settings = (await f.detail()).runs[0].reviewer;
+    const controller = new AbortController();
+    const refusal = new Error("SYNTHETIC owned cleanup unconfirmed");
+    let calls = 0;
+    await assert.rejects(
+      isolatedReview(
+        {
+          runId: "refusal-fixture",
+          kind: "review",
+          settings,
+          signal: controller.signal,
+          prepare: async () => f.root,
+          metadata: {},
+          diff: "",
+          prompt: "Fixture",
+          schema: reviewSchema,
+        },
+        {
+          execute: async () => {
+            calls++;
+            controller.abort(new Error("Synthetic cancellation"));
+            throw refusal;
+          },
+        },
+      ),
+      (error) => error === refusal,
+    );
+    assert.equal(calls, 1);
+  } finally {
+    await f.close();
+  }
+});
+
 test("entry timeout is disclosed while an aborted sequence never starts Main", async () => {
   const f = await fixture();
   try {

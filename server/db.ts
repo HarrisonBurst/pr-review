@@ -118,6 +118,7 @@ export interface AutomationState {
 }
 
 interface RunRow {
+  cancellation_json: string | null;
   auto_submission_json: string | null;
   id: string;
   pr_id: string;
@@ -222,7 +223,7 @@ export interface JobRow {
   pr_id: string;
   run_id: string;
   payload_json: string;
-  status: "queued" | "running" | "completed" | "failed" | "interrupted";
+  status: ReviewRun["status"];
   created_at: string;
   started_at: string | null;
   finished_at: string | null;
@@ -568,6 +569,8 @@ export class AppDatabase {
       this.sqlite.exec(
         "ALTER TABLE prs ADD COLUMN imported INTEGER NOT NULL DEFAULT 0",
       );
+    if (!this.columns("runs").has("cancellation_json"))
+      this.sqlite.exec("ALTER TABLE runs ADD COLUMN cancellation_json TEXT");
     if (!this.columns("runs").has("progress_json"))
       this.sqlite.exec("ALTER TABLE runs ADD COLUMN progress_json TEXT");
     if (!this.columns("runs").has("integration_json"))
@@ -1251,8 +1254,14 @@ export class AppDatabase {
         ),
       );
     this.sqlite
-      .prepare("UPDATE runs SET auto_submission_json = ? WHERE id = ?")
-      .run(json(run.autoSubmission ?? null), run.id);
+      .prepare(
+        "UPDATE runs SET auto_submission_json = ?, cancellation_json = ? WHERE id = ?",
+      )
+      .run(
+        json(run.autoSubmission ?? null),
+        run.cancellation === undefined ? null : json(run.cancellation),
+        run.id,
+      );
   }
 
   getRun(runId: string): ReviewRun | null {
@@ -1311,6 +1320,7 @@ export class AppDatabase {
         | "log"
         | "result"
         | "progress"
+        | "cancellation"
       >
     >,
   ): void {
@@ -1319,7 +1329,7 @@ export class AppDatabase {
     const next = { ...current, ...update };
     this.sqlite
       .prepare(
-        `UPDATE runs SET status = ?, started_at = ?, finished_at = ?, error = ?, log = ?, result_json = ?, progress_json = ? WHERE id = ?`,
+        `UPDATE runs SET status = ?, started_at = ?, finished_at = ?, error = ?, log = ?, result_json = ?, progress_json = ?, cancellation_json = ? WHERE id = ?`,
       )
       .run(
         next.status,
@@ -1329,6 +1339,7 @@ export class AppDatabase {
         next.log,
         next.result ? json(next.result) : null,
         next.progress ? json(next.progress) : null,
+        next.cancellation === undefined ? null : json(next.cancellation),
         runId,
       );
   }
@@ -1580,13 +1591,17 @@ export class AppDatabase {
     );
   }
 
-  listJobs(status?: JobRow["status"]): JobRow[] {
-    const rows = status
-      ? this.sqlite
-          .prepare("SELECT * FROM jobs WHERE status = ? ORDER BY created_at")
-          .all(status)
-      : this.sqlite.prepare("SELECT * FROM jobs ORDER BY created_at").all();
-    return rows as unknown as JobRow[];
+  listJobs(status?: JobRow["status"], prId?: string): JobRow[] {
+    const where = [status ? "status = ?" : "", prId ? "pr_id = ?" : ""].filter(
+      Boolean,
+    );
+    return this.sqlite
+      .prepare(
+        `SELECT * FROM jobs${where.length ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY created_at`,
+      )
+      .all(
+        ...[status, prId].filter((value) => value !== undefined),
+      ) as unknown as JobRow[];
   }
 
   updateJob(jobId: string, update: Partial<JobRow>): void {
@@ -1607,6 +1622,18 @@ export class AppDatabase {
       )
       .run();
     const timestamp = now();
+    for (const job of this.listJobs("running")) {
+      const run = this.getRun(job.run_id);
+      if (run?.cancellation)
+        this.updateRun(run.id, {
+          cancellation: {
+            ...run.cancellation,
+            status: "unconfirmed",
+            finishedAt: timestamp,
+            message: "Backend stopped before owned shutdown was confirmed",
+          },
+        });
+    }
     this.sqlite
       .prepare(
         "UPDATE jobs SET status = 'interrupted', finished_at = ?, error = ? WHERE status = 'running'",
@@ -1896,6 +1923,13 @@ export class AppDatabase {
 
   private toRun(row: RunRow): ReviewRun {
     return {
+      ...(row.cancellation_json
+        ? {
+            cancellation: parsed<ReviewRun["cancellation"]>(
+              row.cancellation_json,
+            ),
+          }
+        : {}),
       autoSubmission: row.auto_submission_json
         ? parsed<ReviewRun["autoSubmission"]>(row.auto_submission_json)
         : null,

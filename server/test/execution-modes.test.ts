@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import {
   dangerousConfirmation,
+  cancelReviewConfirmation,
   dockerSetupConfirmation,
   dockerApprovalConfirmation,
   automationOff,
@@ -31,7 +32,7 @@ import { supportedImage } from "../execution/policy.js";
 import { HostExecutor } from "../execution/host.js";
 import { DockerExecutor } from "../execution/executor.js";
 import { ConfiguredWorkflows } from "../execution/workflows.js";
-import type { runCommand } from "../util.js";
+import { terminateRunningCommands, type runCommand } from "../util.js";
 
 async function fixture() {
   const root = await mkdtemp(path.join(tmpdir(), "pr-review-modes-"));
@@ -830,3 +831,92 @@ test("host execution rejects absent captured consent before preparing or dispatc
     /no longer supported/,
   );
 });
+
+for (const refuse of [false, true])
+  test(`Dangerous Claude cancellation uses only its owned inert child group and reports ${refuse ? "signal refusal" : "confirmed close"}`, async (t) => {
+    const f = await fixture();
+    const readyPath = path.join(f.root, "owned-ready.json");
+    let work: Promise<void> | undefined;
+    try {
+      await writeFile(
+        path.join(f.bin, "claude"),
+        `#!${process.execPath}
+const fs=require("node:fs");
+const {spawn}=require("node:child_process");
+fs.readFileSync(0,"utf8");
+const child=spawn(process.execPath,["-e",'console.log(process.pid); setInterval(()=>{},1000)'],{stdio:["ignore","pipe","ignore"]});
+child.stdout.once("data", chunk=>{fs.writeFileSync(${JSON.stringify(readyPath)},JSON.stringify({parent:process.pid,child:Number(String(chunk).trim())})); child.stdout.destroy();});
+process.on("SIGTERM",()=>child.once("exit",()=>process.exit(0)));
+setInterval(()=>{},1000);
+`,
+      );
+      await f.service.selectSkillHarness(
+        {
+          version: 2,
+          workflow: "dangerous",
+          harness: "claude",
+          reviewer: { skillPath: f.app.reviewer.skillPath, model: null },
+        },
+        dangerousConfirmation,
+      );
+      await f.send("/sync", {});
+      await f.service.manualReview("demo/repository#42");
+      const job = f.service.db.listJobs("queued")[0]!;
+      work = f.service.processJob(job);
+      let owned: { parent: number; child: number } | undefined;
+      for (let i = 0; i < 200 && !owned; i++) {
+        try {
+          owned = JSON.parse(await readFile(readyPath, "utf8"));
+        } catch {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+      }
+      assert.ok(owned, "owned inert Claude children did not start");
+      const kill = process.kill.bind(process);
+      const signals: number[] = [];
+      t.mock.method(
+        process,
+        "kill",
+        (...[target, signal]: Parameters<typeof process.kill>) => {
+          if (signal !== 0 && target === -owned.parent) {
+            signals.push(target);
+            if (refuse)
+              throw Object.assign(
+                new Error("SYNTHETIC owned SIGTERM refusal"),
+                { code: "EPERM" },
+              );
+          }
+          return kill(target, signal);
+        },
+      );
+      const observed = f.detail().pr.reviewJobs![0]!;
+      f.service.reviewJobAction(
+        "demo/repository#42",
+        observed.jobId,
+        "cancel",
+        { ...observed, confirmation: cancelReviewConfirmation },
+      );
+      assert.equal(
+        f.service.db.getRun(job.run_id)?.cancellation?.status,
+        "pending",
+      );
+      await work;
+      const run = f.service.db.getRun(job.run_id)!;
+      assert.equal(run.reviewer.hostExecution?.harness, "claude");
+      assert.equal(
+        run.cancellation?.status,
+        refuse ? "unconfirmed" : "confirmed",
+      );
+      assert.equal(run.status, refuse ? "running" : "cancelled");
+      assert.equal(run.result, null);
+      assert.ok(signals.length > 0);
+      assert.ok(signals.every((target) => target === -owned.parent));
+      if (refuse) assert.equal(kill(owned.child, 0), true);
+      else assert.throws(() => kill(owned.child, 0), { code: "ESRCH" });
+    } finally {
+      t.mock.restoreAll();
+      await terminateRunningCommands();
+      await work;
+      await f.close();
+    }
+  });

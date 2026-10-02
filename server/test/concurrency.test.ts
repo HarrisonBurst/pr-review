@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 
 import {
   automationOff,
+  cancelReviewConfirmation,
   inheritAutomation,
   type MergeReadiness,
   type PullRequest,
@@ -593,6 +594,72 @@ test("questions keep their own lane and settings changes queue no reviews", asyn
     await settle();
     assert.equal(service.db.listJobs().length, before);
     assert.equal(reviewer.active, 3);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("unqueue skips only the observed waiting job while cancellation preserves eligible FIFO and same-PR sequencing", async () => {
+  const { service, github, reviewer, cleanup } = await makeService([
+    1, 2, 3, 4,
+  ]);
+  try {
+    service.updateSettings({ maxConcurrentReviews: 2 });
+    await service.manualReview(id(1));
+    await service.manualReview(id(2));
+    await waitFor(() => reviewer.started.length === 2);
+    github.prs.set(1, remote(1, "new-head-1"));
+    await service.manualReview(id(1));
+    await service.manualReview(id(3));
+    await service.manualReview(id(4));
+    const waiting = service.getDetail(id(3)).pr.reviewJobs![0]!;
+    service.reviewJobAction(id(3), waiting.jobId, "unqueue", waiting);
+    const active = service
+      .getDetail(id(1))
+      .pr.reviewJobs!.find((job) => job.status === "running")!;
+    service.reviewJobAction(id(1), active.jobId, "cancel", {
+      ...active,
+      confirmation: cancelReviewConfirmation,
+    });
+    await waitFor(() => reviewer.started.length === 3);
+    assert.deepEqual(reviewer.started, [id(1), id(2), id(1)]);
+    assert.equal(
+      reviewer.gates.filter((gate) => gate.input.pr.id === id(1)).length,
+      1,
+    );
+    assert.equal(
+      service.db.getRun(active.runId)?.cancellation?.status,
+      "confirmed",
+    );
+    assert.equal(service.db.getJob(waiting.jobId)?.status, "unqueued");
+    reviewer.release(2);
+    await waitFor(() => reviewer.started.length === 4);
+    assert.equal(reviewer.started[3], id(4));
+    assert.equal(reviewer.peak, 2);
+    reviewer.releaseAll();
+    await waitFor(() => service.db.listJobs("running").length === 0);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("a real queued-to-start transition conflicts with Unqueue and never becomes running cancellation", async () => {
+  const { service, reviewer, cleanup } = await makeService([1, 2]);
+  try {
+    await service.manualReview(id(1));
+    await waitFor(() => reviewer.started.length === 1);
+    await service.manualReview(id(2));
+    const observed = service.getDetail(id(2)).pr.reviewJobs![0]!;
+    reviewer.release(1);
+    await waitFor(() => reviewer.started.length === 2);
+    assert.throws(
+      () => service.reviewJobAction(id(2), observed.jobId, "unqueue", observed),
+      /running/,
+    );
+    assert.equal(service.db.getRun(observed.runId)?.cancellation, null);
+    assert.equal(reviewer.active, 1);
+    reviewer.release(2);
+    await waitFor(() => service.db.listJobs("running").length === 0);
   } finally {
     await cleanup();
   }

@@ -46,6 +46,10 @@ Saving a higher limit starts eligible queued jobs immediately. Lowering it never
 
 Backend shutdown interrupts every active job and marks it interrupted. Restart reruns none of them automatically.
 
+Inbox rows and the PR action area show **Unqueue** for each observed queued full review or AI revision. It removes only that job from dispatch, retaining history. If it started meanwhile, the app reports the running-state conflict; Unqueue never becomes cancellation.
+
+**Cancel review** opens an explicit confirmation for the observed running job and head. Cancellation pending means a request was accepted, not that execution stopped. Cancellation confirmed requires owned shutdown. Shutdown unconfirmed retains the slot and same-PR exclusion, with the error visible; restart does not manufacture confirmation. These actions preserve drafts, proposals, questions and submission history, pause automatic app publication through the existing PR hold and suppress automatic requeue of that exact head across restart. Explicit Review/Re-review and intended new-head automation remain available. Nothing undoes Dangerous native effects or already-dispatched publication. See [precise controls and limits](review-controls.md).
+
 ## Inbox groups and ordering
 
 The inbox contains open PRs that request your review, request a review from one of your teams, were imported by URL or have a successful full review or confirmed submission saved locally. Each appears once in one of three collapsible groups:

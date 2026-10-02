@@ -41,6 +41,8 @@ const runTone: Record<RunStatus, Tone> = {
   completed: "ok",
   failed: "danger",
   interrupted: "warn",
+  unqueued: "neutral",
+  cancelled: "warn",
 };
 
 const submissionTone: Record<Submission["status"], Tone> = {

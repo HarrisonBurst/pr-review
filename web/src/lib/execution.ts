@@ -140,6 +140,8 @@ const statusOutcome: Record<ReviewRun["status"], string> = {
   completed: "Completed.",
   failed: "Failed; no draft was produced.",
   interrupted: "Interrupted; no draft was produced.",
+  unqueued: "Unqueued; nothing was dispatched.",
+  cancelled: "Cancelled after owned shutdown; prior effects are not undone.",
 };
 
 export function runOutcome(run: Pick<ReviewRun, "status" | "result" | "progress">): string {

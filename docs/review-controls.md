@@ -1,0 +1,44 @@
+# Precise Unqueue and Cancel review
+
+Inbox and PR action surfaces target a recorded job id, immutable run id and head, including full reviews and AI revisions. Unqueue is queued-only: the synchronous database transition and dispatch fence prevent that job from starting. A queued-to-running race is a conflict, not permission to cancel. History remains.
+
+Cancel review requires explicit keyboard-accessible confirmation. Pending is persisted before aborting that run's controller. Confirmed means the owned adapter settled with its abort reason after shutdown, not merely that a signal was requested. Failed signals, cleanup errors and other termination uncertainty are retained as unconfirmed; the running job keeps its slot and same-PR exclusion. A restart preserves interrupted/unconfirmed history, without claiming the lost process was terminated. This action has no broad kill, process-name lookup, shared-container stop or mode/model fallback.
+
+Native commands use their existing owned ChildProcess/process group, await close and verify release of the retained group after abort, escalating only that owned group if needed. This includes Dangerous Claude and its relevant children. Isolated orchestration preserves a shutdown failure rather than replacing it with the abort reason or starting later entries. Docker keeps its existing exact owned supervisor/container and cleaned-close proof. Unsupported/unavailable ownership fails visibly; no live native or Docker readiness is established by these fixtures. Detached malicious host descendants are not contained by worktree or process ownership. Cancellation cannot undo prior host changes, direct native publications, or an already-dispatched or uncertain app publication.
+
+The result-acceptance fence rejects late cancelled output before draft/proposal creation. Completed runs win the finish/cancel race, even while later freshness/publication work awaits. Existing immutable reviews, edited drafts, proposals, questions and submission attempts remain untouched. Accepted actions advance the existing PR publication hold version/generation, requiring the existing explicit future-review re-enable flow, without changing automation settings, author/action consent or provider/tool grants. Manual exact preview/submit remains independent.
+
+A stopped exact head suppresses automatic full-review enqueue across restart, including same-SHA re-requests and overlapping commit/request triggers. Manual Review/Re-review is an explicit retry and retains exact-head pending dedup. New heads retain their existing automation behavior. The queue continues eligible FIFO, configured concurrency and same-PR sequencing; unrelated jobs use available slots. Ask AI is unchanged. There is no bulk cancellation or queue reorder.
+
+## Inert verification
+
+The reusable launcher is `node --import tsx server/test/fixtures/review-controls-browser.ts` from the project root after a normal build. It creates disposable HOME and database state, selects synthetic execution through existing fixtures and serves the built UI on an allocated loopback port. `--empty` starts onboarding. All GitHub, reviewer and classifier behavior is synthetic, never a live-error fallback. The UI visibly says Demo mode and uses a deterministic demo PR.
+
+Commands `queue`, `start`, `finish`, `fail`, `status`, `quit` let the operator hold queued/running work indefinitely. `start` waits until the inert reviewer actually enters its gate; `finish` releases it and exercises the late-result fence if cancelled; `fail` releases it with explicit shutdown uncertainty. A pending request cannot become fixture success merely by waiting for a quick completion timer. `status` reports synthetic state, zero native dispatches and inert writes. Quit closes only owned fixture resources.
+
+Focused regression sources:
+
+- `server/test/review-controls.test.ts`: exact identities, queued/start and double-action conflicts, pending/confirmed/unconfirmed state, restart and same-head suppression/manual retry/new-head dedup, completed-work races, publication holds, retained edited drafts/proposals/questions/confirmed-dispatched-uncertain history, HTTP/SSE/reload and exact manual preview.
+- `server/test/concurrency.test.ts`: real queue transitions, unaffected eligible FIFO/concurrency and same-PR sequencing.
+- `server/test/util.test.ts`, `execution-modes.test.ts`, `isolated-roles.test.ts`: owned descendant close, retained-group uncertainty, signal refusal, inert Dangerous Claude children and propagation of Isolated shutdown failures.
+- `web/src/ReviewControls.test.tsx`: Inbox targeting, PR full-review/revision keyboard confirmation, pending/confirmed/refusal/conflict feedback, double-action fencing and unsaved-edit/manual-preview preservation.
+
+## Built-browser evidence
+
+The pinned dependency initially showed only a disabled Queued Inbox action and Review in progress on the PR, with no Unqueue or Cancel control. A normal production build was exercised through a real isolated Chrome session and the disposable launcher above, never through a production listener. Already-installed chrome-devtools-axi 0.1.29 was used because the default CLI/MCP pairing rejected its pageId arguments; no tool installation occurred.
+
+Built Inbox/PR actions exercised full-review Unqueue and Cancel, AI-revision Unqueue and Cancel, exact observed run/head confirmation, retained history and truthful pending/confirmed/unconfirmed states. Pending survived a hard reload while the inert reviewer remained gated. Releasing cancelled output created no new draft/proposal; explicit synthetic shutdown failure remained unconfirmed and retained its slot. The actual 375px emulated viewport had a 375px document width, without horizontal overflow.
+
+The fresh normal bundle also exercised empty onboarding, inert import into PR detail, a successful synthetic review, Begin editing and Save, revision cancellation while the editor held unsaved changes, fresh reload, exact JSON preview and keyboard Cancel without submission. Final saved text was exactly `SYNTHETIC exact preserved draft`, save version 5, with one draft, two prior completed revision proposals retained and zero submissions. Earlier keyboard attempts selected Keep running before the fixture was released; their actual completed proposals were retained, not relabeled as cancelled late results. Fixture status reported zero native dispatches and zero writes.
+
+Keyboard confirmation uses the existing modal and preserves focus across live parent updates. An initial candidate reset the keyboard choice because its close callback changed with live rendering; the focused regression and stable callback correct it. The fresh bundle held Keep running across updates, Tab moved to Confirm cancellation and Enter recorded pending. Earlier browser automation had stale references, ineffective selector-based typing and a premature fixture command before import; these are retained failed attempts, not claims of app success. Hard reload verified the actual current emitted bundle before final action/draft evidence.
+
+Local evidence consists of before/after accessibility snapshots, pending-reload/unqueued/unconfirmed/keyboard-confirmation screenshots, exact-preview JSON and cancelled-preview snapshots, and labeled fixture logs. No private content or operational preferences are published here. Focused regressions passed before the final documented repository pass. Fixture success is not installed, live model/provider/auth compatibility or production cancellation evidence.
+
+## Repository check outcomes
+
+The single final coherent sequence was **FAILED**. `npm run format:check`, the documented explicit contract/docs formatting check, `npm run typecheck` and the normal `npm run build` passed, with the existing bundle-size warning. `npm test` recorded **761 backend passed, 1 failed, 18 opt-in skipped**, then its `&&` skipped the web suite. The failure at `server/test/drafts.test.ts:366` was an added `cancellation:null` property in the historical immutable run projection, not lost review content. This failed pass remains recorded and was not rerun.
+
+The bounded repair preserves optional-field absence through database creation, updates and projection, retains explicitly populated cancellation evidence, and records the known empty state on newly queued review/revision runs. The historical assertion and every existing test assertion remain unchanged.
+
+Exactly one follow-up invocation, `node --import tsx --test server/test/drafts.test.ts server/test/review-controls.test.ts server/test/concurrency.test.ts`, passed **49 tests**. The previously unreached web suite, `npm run test --workspace web`, ran once and passed **281 tests in 13 files**. These are bounded follow-ups, **not a passing coherent pass**. No second full backend/coherent pass, extra retry round, deadline change or live integration verification was performed.

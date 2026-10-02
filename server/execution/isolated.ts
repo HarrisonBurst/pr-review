@@ -91,8 +91,7 @@ export async function isolatedReview(
       };
       evidence.push(failed);
       request.progress?.entry?.(failed);
-      request.signal?.throwIfAborted();
-      if (entry.role === "main") throw error;
+      if (request.signal?.aborted || entry.role === "main") throw error;
       logs.push(
         `Additional ${entry.id} (${entry.harness}/${entry.model}) failed: ${diagnostic}`,
       );
