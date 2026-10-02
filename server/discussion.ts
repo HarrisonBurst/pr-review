@@ -280,6 +280,7 @@ export async function acquireReviewInventory(
     `repos/${pr.repository}/pulls/${pr.number}/reviews`,
   );
   const reviews: ReviewInventory["reviews"] = [];
+  let inlineRows: any[] | null = null;
   for (const row of rows) {
     if (
       !row.submitted_at ||
@@ -293,11 +294,23 @@ export async function acquireReviewInventory(
       !Number.isFinite(Date.parse(row.submitted_at))
     )
       throw new Error("Review attribution or payload is incomplete");
+    if (row.commit_id === pr.headSha && inlineRows === null) {
+      inlineRows = await githubPages(
+        read,
+        `repos/${pr.repository}/pulls/${pr.number}/comments`,
+      );
+      if (
+        inlineRows.some(
+          (comment) => !Number.isInteger(comment.pull_request_review_id),
+        )
+      )
+        throw new Error("Inline review attribution unavailable");
+    }
     const inline =
       row.commit_id === pr.headSha
-        ? await githubPages(
-            read,
-            `repos/${pr.repository}/pulls/${pr.number}/reviews/${row.id}/comments`,
+        ? inlineRows!.filter(
+            (comment) =>
+              String(comment.pull_request_review_id) === String(row.id),
           )
         : [];
     const comments: ReviewComment[] = inline.map((comment) => {

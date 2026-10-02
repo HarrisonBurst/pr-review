@@ -12,6 +12,11 @@ import {
   type SubmissionRecovery,
 } from "../publication.js";
 import type { ReviewPayload } from "../../shared/contracts.js";
+import {
+  inlineInventoryFixture,
+  inlineInventoryRead,
+} from "./fixtures/inline-inventory.js";
+import { fixturePrId } from "./fixtures/auto-submission.js";
 
 const comment = (id: number) => ({
   id,
@@ -229,6 +234,7 @@ test("exact recovery inventory paginates inline comments and preserves event/anc
       return JSON.stringify(
         rows.map((id) => ({
           id,
+          pull_request_review_id: 77,
           path: "src/demo.ts",
           line: 2,
           side: "LEFT",
@@ -256,6 +262,89 @@ test("exact recovery inventory paginates inline comments and preserves event/anc
   assert.equal(inventory.reviews[0]?.payload.comments[0]?.start_side, "LEFT");
   assert.equal(inventory.reviews[0]?.payload.body, "SYNTHETIC exact body\n");
   assert.deepEqual(inventory.reviewIds, ["77"]);
+});
+
+test("manual approval with an existing same-head inline review uses exact modern anchors before writing", async () => {
+  const f = await inlineInventoryFixture();
+  try {
+    const draft = f.service.getDetail(fixturePrId).draft!;
+    const preview = await f.service.preview(
+      fixturePrId,
+      draft.id,
+      draft.version,
+    );
+    assert.equal(preview.payload.event, "APPROVE");
+    assert.equal(preview.payload.comments.length, 1);
+    assert.equal(f.github.writes.length, 0);
+    assert.equal(f.service.getDetail(fixturePrId).pr.status, "ready");
+    await f.service.submit(fixturePrId, preview.id);
+    const inventory = await f.github.reviewInventory();
+    assert.deepEqual(inventory.reviewIds, ["77"]);
+    assert.equal(inventory.reviews[0]!.payload.comments[0]!.line, 2);
+    assert.equal(inventory.reviews[0]!.payload.comments[0]!.side, "RIGHT");
+    assert.deepEqual(f.github.writes, [preview.payload]);
+    assert.equal(f.service.getDetail(fixturePrId).pr.status, "submitted");
+    assert.deepEqual(f.service.getDetail(fixturePrId).draft, draft);
+    await f.service.submit(fixturePrId, preview.id);
+    assert.equal(f.github.writes.length, 1);
+  } finally {
+    await f.close();
+  }
+});
+
+test("inventory groups modern comments by review without guessing missing anchors from legacy positions", async () => {
+  const pr = await pull();
+  const read = inlineInventoryRead(pr);
+  const calls: string[] = [];
+  const inventory = await acquireReviewInventory(async (args) => {
+    calls.push(args[1]!);
+    const rows = JSON.parse(await read(args));
+    if (args[1] === "user") return JSON.stringify(rows);
+    if (args[1]!.includes("/comments?"))
+      return JSON.stringify([
+        ...rows,
+        {
+          ...rows[0],
+          id: 102,
+          pull_request_review_id: 78,
+          line: 1,
+          side: "LEFT",
+        },
+      ]);
+    return JSON.stringify([
+      ...rows,
+      { ...rows[0], id: 78, state: "COMMENTED" },
+    ]);
+  }, pr);
+  assert.deepEqual(
+    inventory.reviews.map((item) => item.commentIds),
+    [["101"], ["102"]],
+  );
+  assert.equal(inventory.reviews[1]!.payload.comments[0]!.side, "LEFT");
+  assert.equal(calls.filter((path) => path.includes("/comments?")).length, 1);
+  assert.equal(
+    calls.some((path) => path.includes("/reviews/")),
+    false,
+  );
+  for (const field of [
+    "line",
+    "side",
+    "start_side",
+    "pull_request_review_id",
+  ]) {
+    await assert.rejects(
+      acquireReviewInventory(async (args) => {
+        const rows = JSON.parse(await read(args));
+        if (args[1]!.includes("/comments?")) {
+          rows[0].original_line = 2;
+          if (field === "start_side") rows[0].start_line = 1;
+          rows[0][field] = null;
+        }
+        return JSON.stringify(rows);
+      }, pr),
+      /placement unavailable|attribution unavailable/,
+    );
+  }
 });
 
 test("reconciliation needs one new complete exact author/event/head/body/inline match", () => {

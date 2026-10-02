@@ -7,7 +7,7 @@ import { Modal, Notice, SeverityPill, Spinner, SubmissionPill } from "./ui";
 
 type Phase =
   | { kind: "loading" }
-  | { kind: "error"; message: string; conflict: boolean }
+  | { kind: "error"; operation: "preview" | "submission"; message: string; conflict: boolean }
   | { kind: "ready"; preview: SubmissionPreview }
   | { kind: "submitting"; preview: SubmissionPreview }
   | { kind: "done"; submission: Submission };
@@ -41,6 +41,7 @@ export function SubmitModal({
         const err = e instanceof RequestError ? e : null;
         setPhase({
           kind: "error",
+          operation: "preview",
           message: err?.message ?? String(e),
           conflict: err?.conflict ?? false,
         });
@@ -61,6 +62,7 @@ export function SubmitModal({
       const err = e instanceof RequestError ? e : null;
       setPhase({
         kind: "error",
+        operation: "submission",
         message: err?.message ?? String(e),
         conflict: err?.conflict ?? false,
       });
@@ -117,7 +119,13 @@ export function SubmitModal({
       {phase.kind === "error" && (
         <Notice
           tone="danger"
-          title={phase.conflict ? "Cannot submit this draft." : "Preview failed."}
+          title={
+            phase.conflict
+              ? "Cannot submit this draft."
+              : phase.operation === "submission"
+                ? "Submission failed."
+                : "Preview failed."
+          }
         >
           {phase.message}
           {phase.conflict && " Close this dialog, reload the draft, and try again."}
