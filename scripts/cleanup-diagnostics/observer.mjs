@@ -15,11 +15,23 @@ const children = new WeakMap();
 let sequence = 0;
 const environment = () => ({
   kernel: release(),
-  os: process.env.CLEANUP_DIAGNOSTIC_OS,
+  os: childProcess
+    .execFileSync("sw_vers", ["-productVersion"], {
+      encoding: "utf8",
+      timeout: 2000,
+    })
+    .trim(),
+  build: childProcess
+    .execFileSync("sw_vers", ["-buildVersion"], {
+      encoding: "utf8",
+      timeout: 2000,
+    })
+    .trim(),
   image: process.env.ImageVersion,
   imageOS: process.env.ImageOS,
   architecture: process.arch,
   node: process.version,
+  npm: process.env.CLEANUP_DIAGNOSTIC_NPM,
   cpus: availableParallelism(),
   load: loadavg(),
 });
@@ -29,7 +41,7 @@ export function diagnosticEvent(stage, fields = {}) {
   if (++sequence > 10000) throw new Error("Diagnostic event budget exhausted");
   appendFileSync(
     ledger,
-    `${JSON.stringify({ time: Date.now(), origin: self, sequence, stage, ...fields })}\n`,
+    `${JSON.stringify({ time: Date.now(), origin: self, sequence, stage, ...(stage.endsWith("_error") ? { environment: environment() } : {}), ...fields })}\n`,
   );
 }
 
@@ -86,12 +98,22 @@ function groupSnapshot(pgid) {
     complete: group.errno === 0 && group.bytes < 129 * 4,
     memberCount: members.length,
     unknownMembers: unknown,
+    ownedGroup: owned.some((child) => child.pgid === pgid),
     recorded,
   };
 }
 
 if (active) {
-  diagnosticEvent("observer_start", { environment: environment() });
+  diagnosticEvent("observer_start", {
+    environment: environment(),
+    interventions: [
+      "inherited preload and child environment marker",
+      "synchronous targeted native snapshots and ledger reads/writes",
+      "native signal refusal only for incomplete or unowned membership",
+      "confirmed empty recorded groups retain the exact native call and error",
+      "snapshots precede calls and cannot eliminate kernel TOCTOU",
+    ],
+  });
   const spawn = childProcess.spawn;
   childProcess.spawn = function (command, args, options) {
     const child = spawn.call(this, command, args, {
@@ -137,13 +159,13 @@ if (active) {
       target < 0 &&
       signal !== 0 &&
       (!before.complete ||
+        !before.ownedGroup ||
         before.unknownMembers !== 0 ||
-        !before.recorded.some(
+        before.recorded.some(
           (member) =>
-            member.sameIncarnation &&
-            member.current.pgid === -target &&
-            member.current.uid === self.uid &&
-            member.current.status !== 5,
+            !member.sameIncarnation ||
+            member.current.pgid !== -target ||
+            member.current.uid !== self.uid,
         ))
     ) {
       diagnosticEvent("diagnostic_signal_refused", {
@@ -155,24 +177,38 @@ if (active) {
         code: "DIAGNOSTIC_OWNERSHIP_UNCONFIRMED",
       });
     }
+    const started = process.hrtime.bigint();
+    let result;
     try {
-      const result = kill(target, signal);
+      result = kill(target, signal);
+    } catch (error) {
+      const nativeNanoseconds = String(process.hrtime.bigint() - started);
+      try {
+        diagnosticEvent("signal_error", {
+          target,
+          signal,
+          code: error?.code ?? null,
+          errno: error?.errno ?? null,
+          syscall: error?.syscall ?? null,
+          nativeNanoseconds,
+          group: target < 0 ? groupSnapshot(-target) : null,
+        });
+      } finally {
+        throw error;
+      }
+    }
+    const nativeNanoseconds = String(process.hrtime.bigint() - started);
+    try {
       diagnosticEvent("signal_result", {
         target,
         signal,
         result,
+        nativeNanoseconds,
         group: target < 0 ? groupSnapshot(-target) : null,
       });
-      return result;
     } catch (error) {
-      diagnosticEvent("signal_error", {
-        target,
-        signal,
-        code: error?.code ?? null,
-        environment: environment(),
-        group: target < 0 ? groupSnapshot(-target) : null,
-      });
-      throw error;
+      diagnosticEvent("observer_result_error", { code: error?.code ?? null });
     }
+    return result;
   };
 }

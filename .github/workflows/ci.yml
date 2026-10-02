@@ -12,6 +12,8 @@ jobs:
   paired-diagnostics:
     runs-on: macos-latest
     timeout-minutes: 15
+    env:
+      CLEANUP_DIAGNOSTIC_DEADLINE: 2026-10-02T19:40:36Z
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -21,9 +23,13 @@ jobs:
         with:
           node-version: 24.20.0
           cache: npm
+      - run: node -e 'if (Date.now() + 120000 >= Date.parse(process.env.CLEANUP_DIAGNOSTIC_DEADLINE)) process.exit(2)'
       - run: npm ci
+        timeout-minutes: 2
       - run: git fetch origin 6e75ef849503a0bb683940a7c96195cdd31cac28
+        timeout-minutes: 1
       - run: node scripts/cleanup-diagnostics/run.mjs
+        timeout-minutes: 12
         env:
           CLEANUP_DIAGNOSTIC_OUTPUT: ${{ runner.temp }}/cleanup-diagnostics
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
