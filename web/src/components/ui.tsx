@@ -17,6 +17,7 @@ import { createPortal } from "react-dom";
 import type {
   IntegrationHealth,
   PrStatus,
+  PullRequest,
   RunStatus,
   Severity,
   Submission,
@@ -82,6 +83,19 @@ export const StatusPill = ({ status }: { status: PrStatus }) => (
     {statusLabel[status]}
   </Pill>
 );
+
+export function ViewerApprovalPill({ pr }: { pr: PullRequest }) {
+  const approval = pr.viewerApproval;
+  if (!approval?.commitSha || approval.headSha !== pr.headSha) return null;
+  const current = approval.commitSha === pr.headSha;
+  return (
+    <span className="viewer-approval">
+      <Pill tone={current ? "ok" : "warn"}>
+        {current ? "Approved by you" : "Approved by you at an earlier revision"}
+      </Pill>
+    </span>
+  );
+}
 
 export const StatusDot = ({ status }: { status: PrStatus }) => (
   <span className="status-dot" data-tone={statusTone[status]}>

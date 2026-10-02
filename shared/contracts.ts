@@ -1079,6 +1079,11 @@ export interface MergeReadiness extends MergeObservation {
 }
 
 export interface PullRequest {
+  viewerApproval?: {
+    viewerLogin: string;
+    headSha: string;
+    commitSha: string;
+  } | null;
   reviewJobs?: ReviewJob[];
   autoSubmission?: AutoSubmissionState;
   id: string;
