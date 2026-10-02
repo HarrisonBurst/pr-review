@@ -528,6 +528,7 @@ export class ReviewService {
       integrations: this.getIntegrations(),
       prs: this.db.listInboxPrs().map((pr) => ({
         ...pr,
+        viewerApproval: this.viewerApproval(pr),
         reviewJobs: this.reviewJobs(pr.id),
         autoSubmission: this.autoSubmissionState(pr),
       })),
@@ -542,6 +543,7 @@ export class ReviewService {
     return {
       pr: {
         ...pr,
+        viewerApproval: this.viewerApproval(pr),
         reviewJobs: this.reviewJobs(pr.id),
         autoSubmission: this.autoSubmissionState(pr),
       },
@@ -1237,7 +1239,7 @@ export class ReviewService {
     repository: string,
     number: number,
   ): Promise<PullRequestDetail> {
-    const remote = await this.github.getPullRequest(repository, number);
+    const remote = await this.readPullRequest(repository, number);
     if (remote.pr.state !== "OPEN") {
       if (this.db.getPr(remote.pr.id)) {
         this.observe(remote, { requestsKnown: false, automatic: true });
@@ -1640,7 +1642,7 @@ export class ReviewService {
     > | null = null;
     try {
       const pr = this.requirePr(prId);
-      const remote = await this.github.getPullRequest(pr.repository, pr.number);
+      const remote = await this.readPullRequest(pr.repository, pr.number);
       controller.signal.throwIfAborted();
       this.observe(
         remote,
@@ -1933,7 +1935,7 @@ export class ReviewService {
       )
         return;
       const scanned = this.requirePr(prId);
-      const remote = await this.github.getPullRequest(
+      const remote = await this.readPullRequest(
         provenance.repository,
         scanned.number,
       );
@@ -2207,6 +2209,9 @@ export class ReviewService {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.healthState.github = health("error", message);
+      for (const pr of tracked)
+        if (!scope || scope.numbers.includes(pr.number))
+          this.db.clearViewerApproval(pr.id);
       this.db.setSyncMeta({ lastPollAt: now(), pollError: message });
       this.emit();
       throw error;
@@ -3724,11 +3729,35 @@ export class ReviewService {
       this.db.setRequestsArmed(prId, true);
   }
 
+  private viewerApproval(pr: PullRequest): PullRequest["viewerApproval"] {
+    const approval = pr.viewerApproval;
+    return approval &&
+      this.healthState.github.status === "ready" &&
+      approval.viewerLogin.toLowerCase() ===
+        this.healthState.githubUser?.toLowerCase()
+      ? approval
+      : null;
+  }
+
+  private async readPullRequest(
+    repository: string,
+    number: number,
+  ): Promise<RemotePullRequest> {
+    try {
+      return await this.github.getPullRequest(repository, number);
+    } catch (error) {
+      const key = prId(repository, number);
+      this.db.clearViewerApproval(key);
+      this.emit(key);
+      throw error;
+    }
+  }
+
   private async refreshRemote(
     pr: PullRequest,
     automatic = true,
   ): Promise<RemotePullRequest> {
-    const remote = await this.github.getPullRequest(pr.repository, pr.number);
+    const remote = await this.readPullRequest(pr.repository, pr.number);
     this.observe(remote, { requestsKnown: false, automatic }, pr.id);
     await this.recordMergeReadiness(pr.id);
     if (automaticallyReviewed(this.requirePr(pr.id))) {

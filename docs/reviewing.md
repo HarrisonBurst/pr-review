@@ -110,6 +110,12 @@ Running a review, opening a page or having a draft never counts as an import. Ol
 
 On upgrade, those unrequested rows without successful full-review or confirmed submission history leave the inbox and polling but retain their full history at their PR URLs. Import the same URL to track an open PR again without creating a duplicate. The migration queues no review and changes no draft. See the [import and sync lifecycle](sync-lifecycle.md) for operation status and request coalescing.
 
+## Your GitHub approval
+
+Inbox rows and the PR page show **Approved by you** when your latest completed GitHub review approves the exact current commit, including reviews made outside this app. Approval on a known different commit says **Approved by you at an earlier revision**. A later comment, request for changes or dismissal removes the indicator; pending review drafts do not replace a completed review.
+
+The indicator refreshes with ordinary PR syncs and checks. Missing or incomplete GitHub evidence shows nothing, and a failed refresh clears cached approval rather than claiming it still applies. It is separate from the app's Submitted status and GitHub merge readiness, and never approves or publishes anything.
+
 ## Merge readiness
 
 Each inbox row has a `Merge:` hint, and the Status card has a Merge row. These show GitHub's report for the exact displayed head, not permission to merge. They do not change local draft status, grouping, ordering or filters, and never merge, approve or review anything.

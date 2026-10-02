@@ -93,6 +93,7 @@ interface PrRow {
   requested_at: string | null;
   request_source: PullRequest["requestSource"];
   historical_request_source: PullRequest["historicalRequestSource"];
+  viewer_approval_json: string | null;
   imported: number;
   created_at: string | null;
   updated_at: string;
@@ -565,6 +566,8 @@ export class AppDatabase {
           );
         `);
       });
+    if (!this.columns("prs").has("viewer_approval_json"))
+      this.sqlite.exec("ALTER TABLE prs ADD COLUMN viewer_approval_json TEXT");
     if (!this.columns("prs").has("imported"))
       this.sqlite.exec(
         "ALTER TABLE prs ADD COLUMN imported INTEGER NOT NULL DEFAULT 0",
@@ -984,8 +987,8 @@ export class AppDatabase {
         `INSERT INTO prs (
       id, number, repository, url, title, body, author, author_avatar_url, head_sha, base_sha, head_ref, base_ref,
       state, requested, requested_at, request_source, historical_request_source, created_at, updated_at, status, blocking_count, non_blocking_count,
-      additions, deletions, changed_files, last_reviewed_at, diff, diff_truncated
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      additions, deletions, changed_files, last_reviewed_at, diff, diff_truncated, viewer_approval_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET number=excluded.number, repository=excluded.repository, url=excluded.url, title=excluded.title,
       body=excluded.body, author=excluded.author, author_avatar_url=excluded.author_avatar_url, head_sha=excluded.head_sha,
       base_sha=excluded.base_sha, head_ref=excluded.head_ref, base_ref=excluded.base_ref, state=excluded.state,
@@ -997,7 +1000,8 @@ export class AppDatabase {
         ELSE 'both' END,
       created_at=COALESCE(excluded.created_at, prs.created_at), updated_at=excluded.updated_at, status=excluded.status,
       blocking_count=excluded.blocking_count, non_blocking_count=excluded.non_blocking_count, additions=excluded.additions,
-      deletions=excluded.deletions, changed_files=excluded.changed_files, diff=excluded.diff, diff_truncated=excluded.diff_truncated`,
+      deletions=excluded.deletions, changed_files=excluded.changed_files, diff=excluded.diff, diff_truncated=excluded.diff_truncated,
+      viewer_approval_json=excluded.viewer_approval_json`,
       )
       .run(
         pr.id,
@@ -1030,8 +1034,15 @@ export class AppDatabase {
         pr.lastReviewedAt,
         diff,
         diffTruncated ? 1 : 0,
+        pr.viewerApproval ? json(pr.viewerApproval) : null,
       );
     return this.getPr(pr.id)!;
+  }
+
+  clearViewerApproval(prId: string): void {
+    this.sqlite
+      .prepare("UPDATE prs SET viewer_approval_json = NULL WHERE id = ?")
+      .run(prId);
   }
 
   getPr(prId: string): PullRequest | null {
@@ -1827,7 +1838,11 @@ export class AppDatabase {
     readiness: Map<string, MergeReadiness>,
   ): PullRequest {
     const automation = parseOverrides(row.automation_json);
+    const approval = row.viewer_approval_json
+      ? parsed<PullRequest["viewerApproval"]>(row.viewer_approval_json)
+      : null;
     return {
+      viewerApproval: approval?.headSha === row.head_sha ? approval : null,
       id: row.id,
       number: row.number,
       repository: row.repository,

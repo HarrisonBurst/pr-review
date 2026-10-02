@@ -127,6 +127,109 @@ const pushedBetweenCalls: Responses = {
   [`repos/owner/repo/compare/${base}...${headB}`]: { stdout: diffFor(headB) },
 };
 
+test("viewer approval reads all review pages, including external approval, and reuses polling identity", async () => {
+  const gh = await makeFakeGh();
+  try {
+    await gh.respond({
+      ...pushedBetweenCalls,
+      user: { stdout: JSON.stringify({ login: "demo-user" }) },
+      "repos/owner/repo/pulls/7/reviews?per_page=100&page=1": {
+        stdout: JSON.stringify(
+          Array.from({ length: 100 }, (_, i) => ({
+            id: i + 1,
+            user: { login: "someone-else" },
+            state: "PENDING",
+          })),
+        ),
+      },
+      "repos/owner/repo/pulls/7/reviews?per_page=100&page=2": {
+        stdout: JSON.stringify([
+          {
+            id: 101,
+            user: { login: "DEMO-USER" },
+            state: "APPROVED",
+            submitted_at: "2026-01-01T00:00:00Z",
+            commit_id: headA,
+          },
+        ]),
+      },
+    });
+    const result = await new GithubCliAdapter().poll("owner/repo", [], {
+      numbers: [7],
+      requestNumbers: [],
+    });
+    assert.deepEqual(result.pullRequests[0]!.pr.viewerApproval, {
+      viewerLogin: "demo-user",
+      headSha: headA,
+      commitSha: headA,
+    });
+    const calls = await gh.calls();
+    assert.equal(calls.filter((args) => args[1] === "user").length, 1);
+    assert.equal(
+      calls.filter((args) => args[1].includes("/reviews?")).length,
+      2,
+    );
+    assert.equal(
+      calls.some((args) => args[1].includes("/comments")),
+      false,
+    );
+    assert.equal(
+      calls.some((args) => args.includes("POST")),
+      false,
+    );
+  } finally {
+    await gh.cleanup();
+  }
+});
+
+test("viewer acquisition failure, missing identity, partial pagination and unsupported review fields never claim approval", async () => {
+  const gh = await makeFakeGh();
+  const page = "repos/owner/repo/pulls/7/reviews?per_page=100&page=1";
+  const approved = {
+    id: 1,
+    user: { login: "demo-user" },
+    state: "APPROVED",
+    submitted_at: "2026-01-01T00:00:00Z",
+    commit_id: headA,
+  };
+  const cases: Responses[] = [
+    {},
+    {
+      [page]: { stdout: JSON.stringify([approved]) },
+      user: { stdout: "{}" },
+    },
+    { [page]: { stdout: "{}" } },
+    {
+      [page]: { stdout: JSON.stringify([{ ...approved, state: undefined }]) },
+    },
+    {
+      [page]: {
+        stdout: JSON.stringify(
+          Array.from({ length: 100 }, (_, i) => ({ ...approved, id: i + 1 })),
+        ),
+      },
+    },
+    { [page]: { stdout: JSON.stringify([approved, approved]) } },
+  ];
+  try {
+    for (const responses of cases) {
+      await gh.respond({
+        ...pushedBetweenCalls,
+        user: { stdout: JSON.stringify({ login: "demo-user" }) },
+        ...responses,
+      });
+      const remote = await new GithubCliAdapter().getPullRequest(
+        "owner/repo",
+        7,
+      );
+      assert.equal(remote.pr.viewerApproval, null);
+      assert.equal(remote.diff, diffFor(headA));
+    }
+  } finally {
+    await gh.cleanup();
+  }
+});
+
 test("getPullRequest ties the diff to the recorded head when a push lands between calls", async () => {
   const gh = await makeFakeGh();
   try {

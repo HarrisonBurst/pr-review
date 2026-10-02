@@ -14,7 +14,12 @@ import {
   type IntegrationSessionSnapshot,
 } from "../shared/contracts.js";
 import type { ProgressReporter } from "./progress.js";
-import { acquireDiscussion, acquireReviewInventory } from "./discussion.js";
+import {
+  acquireDiscussion,
+  acquireReviewInventory,
+  acquireReviews,
+  deriveViewerApproval,
+} from "./discussion.js";
 import type { DiscussionSnapshot } from "../shared/contracts.js";
 import type { ReviewInventory } from "./publication.js";
 import {
@@ -147,8 +152,11 @@ interface RequestIdentity {
   teamIds: Set<number>;
 }
 
-interface GithubReviewResponse {
+export interface GithubReviewResponse {
   id: number | string;
+  user?: { login?: string } | null;
+  state?: string;
+  submitted_at?: string | null;
   html_url?: string;
   body?: string | null;
   commit_id?: string;
@@ -508,6 +516,15 @@ export class GithubCliAdapter implements GithubAdapter {
     repository: string,
     number: number,
   ): Promise<RemotePullRequest> {
+    const identity = await this.health();
+    return this.fetchPullRequest(repository, number, identity.user);
+  }
+
+  private async fetchPullRequest(
+    repository: string,
+    number: number,
+    viewer: string | null,
+  ): Promise<RemotePullRequest> {
     const detail = parseJson<GithubPullResponse>(
       await this.gh(["api", `repos/${repository}/pulls/${number}`]),
       "pull request",
@@ -527,6 +544,16 @@ export class GithubCliAdapter implements GithubAdapter {
       ],
       { allowOutputOverflow: true },
     );
+    pr.viewerApproval = null;
+    if (viewer) {
+      try {
+        pr.viewerApproval = deriveViewerApproval(
+          viewer,
+          await acquireReviews((args) => this.gh(args), pr),
+          pr.headSha,
+        );
+      } catch {}
+    }
     return {
       pr,
       diff: clampText(diff, diffLimit),
@@ -548,7 +575,7 @@ export class GithubCliAdapter implements GithubAdapter {
       for (const number of scope.numbers)
         byId.set(
           prId(repository, number),
-          await this.getPullRequest(repository, number),
+          await this.fetchPullRequest(repository, number, identity.user),
         );
     } else {
       requester = {
@@ -565,7 +592,11 @@ export class GithubCliAdapter implements GithubAdapter {
         if (previous.repository === repository)
           candidates.set(previous.number, previous);
       for (const [number] of candidates) {
-        const item = await this.getPullRequest(repository, number);
+        const item = await this.fetchPullRequest(
+          repository,
+          number,
+          identity.user,
+        );
         byId.set(item.pr.id, item);
       }
     }
