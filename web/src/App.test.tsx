@@ -1127,6 +1127,31 @@ describe("pull request detail", () => {
     expect(screen.queryByText("Nothing has been sent to GitHub.")).not.toBeInTheDocument();
   });
 
+  it("labels a pre-write submission-check failure separately from preview failure", async () => {
+    const user = mount(undefined, (b) => {
+      const handle = b.handle.bind(b);
+      b.handle = (method, path, body) => {
+        if (path.endsWith("/submit"))
+          throw new MockError(500, "Exact inline review placement unavailable", "internal_error");
+        return handle(method, path, body);
+      };
+    });
+    await screen.findByLabelText(/GitHub review body/);
+    await user.click(screen.getByRole("button", { name: "Preview and submit" }));
+    const dialog = await screen.findByRole("dialog");
+    await within(dialog).findByTestId("payload-body");
+    await user.click(within(dialog).getByRole("button", { name: /Submit request changes/ }));
+    expect(await within(dialog).findByText("Submission failed.")).toBeInTheDocument();
+    expect(
+      within(dialog).getByText("Exact inline review placement unavailable"),
+    ).toBeInTheDocument();
+    expect(within(dialog).queryByText("Preview failed.")).not.toBeInTheDocument();
+    expect(backend.submissions["pr-482"]).toBeUndefined();
+    expect(within(dialog).getByRole("button", { name: "Submit review to GitHub" })).toBeDisabled();
+    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
   it("closes the successful result and returns to the inbox with its primary action", async () => {
     const user = mount();
     await screen.findByLabelText(/GitHub review body/);
