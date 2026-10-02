@@ -6,12 +6,22 @@ import { createHttpServer } from "../../http.js";
 import { publicationFixture, fixturePrId } from "./auto-submission.js";
 import { deferredWork } from "./sync-lifecycle.js";
 import { saveFixtureExecution } from "./current-settings.js";
+import { deriveViewerApproval } from "../../discussion.js";
+import type { GithubReviewResponse } from "../../adapters.js";
 
 const home = await mkdtemp(
   path.join(tmpdir(), "pr-review-inert-controls-home-"),
 );
 process.env.HOME = home;
 const f = await publicationFixture(process.argv.includes("--empty"));
+if (process.argv.includes("--approvals")) {
+  f.github.current.pr.headSha = "a".repeat(40);
+  if (!process.argv.includes("--empty"))
+    await f.service.importPullRequest(
+      "https://github.com/demo/repository/pull/42",
+    );
+}
+let reviews: GithubReviewResponse[] = [];
 let gate = deferredWork();
 let failure = false;
 f.reviewer.beforeResult = async () => {
@@ -34,6 +44,26 @@ try {
   for await (const line of input) {
     const command = line.trim();
     if (command === "quit") break;
+    if (command.startsWith("approval-") || command === "push") {
+      const pr = f.github.current.pr;
+      if (command === "push") pr.headSha = "b".repeat(40);
+      else
+        reviews = [
+          {
+            id: 1,
+            user: { login: "demo-user" },
+            state: command === "approval-dismissed" ? "DISMISSED" : "APPROVED",
+            submitted_at: "2026-01-01T00:00:00Z",
+            commit_id:
+              command === "approval-earlier" ? "c".repeat(40) : pr.headSha,
+          },
+        ];
+      pr.viewerApproval =
+        command === "approval-unknown"
+          ? null
+          : deriveViewerApproval("demo-user", reviews, pr.headSha);
+      await f.service.sync();
+    }
     if (command === "queue") {
       if (!f.service.getHarness().effective)
         await saveFixtureExecution(f.service);

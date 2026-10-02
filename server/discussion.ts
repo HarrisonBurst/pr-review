@@ -8,6 +8,7 @@ import type {
   ReviewPayload,
 } from "../shared/contracts.js";
 import type { ReviewInventory } from "./publication.js";
+import type { GithubReviewResponse } from "./adapters.js";
 import { canonicalJson } from "./schema.js";
 
 export type GithubRead = (args: string[]) => Promise<string>;
@@ -268,6 +269,50 @@ export async function acquireDiscussion(
   };
 }
 
+export async function acquireReviews(
+  read: GithubRead,
+  pr: PullRequest,
+): Promise<GithubReviewResponse[]> {
+  return githubPages(read, `repos/${pr.repository}/pulls/${pr.number}/reviews`);
+}
+
+export function deriveViewerApproval(
+  viewer: string | null,
+  reviews: GithubReviewResponse[],
+  headSha: string,
+): PullRequest["viewerApproval"] {
+  if (!viewer) return null;
+  let latest: GithubReviewResponse | null = null;
+  for (const review of reviews) {
+    if (typeof review.user?.login !== "string" || !review.user.login)
+      return null;
+    if (review.user.login.toLowerCase() !== viewer.toLowerCase()) continue;
+    if (review.state === "PENDING") continue;
+    if (
+      !["APPROVED", "COMMENTED", "CHANGES_REQUESTED", "DISMISSED"].includes(
+        review.state ?? "",
+      ) ||
+      typeof review.submitted_at !== "string" ||
+      !Number.isFinite(Date.parse(review.submitted_at)) ||
+      !/^\d+$/.test(String(review.id))
+    )
+      return null;
+    if (
+      !latest ||
+      Date.parse(review.submitted_at) > Date.parse(latest.submitted_at!) ||
+      (Date.parse(review.submitted_at) === Date.parse(latest.submitted_at!) &&
+        BigInt(review.id) > BigInt(latest.id))
+    )
+      latest = review;
+  }
+  return latest?.state === "APPROVED" &&
+    typeof latest.commit_id === "string" &&
+    /^[0-9a-f]{40}$/i.test(latest.commit_id) &&
+    /^[0-9a-f]{40}$/i.test(headSha)
+    ? { viewerLogin: viewer, headSha, commitSha: latest.commit_id }
+    : null;
+}
+
 export async function acquireReviewInventory(
   read: GithubRead,
   pr: PullRequest,
@@ -275,16 +320,13 @@ export async function acquireReviewInventory(
   const user = JSON.parse(await read(["api", "user"]));
   if (typeof user.login !== "string" || !user.login)
     throw new Error("Review writer identity unavailable");
-  const rows = await githubPages(
-    read,
-    `repos/${pr.repository}/pulls/${pr.number}/reviews`,
-  );
+  const rows = await acquireReviews(read, pr);
   const reviews: ReviewInventory["reviews"] = [];
   let inlineRows: any[] | null = null;
   for (const row of rows) {
     if (
       !row.submitted_at ||
-      !["COMMENTED", "APPROVED", "CHANGES_REQUESTED"].includes(row.state)
+      !["COMMENTED", "APPROVED", "CHANGES_REQUESTED"].includes(row.state ?? "")
     )
       continue;
     if (

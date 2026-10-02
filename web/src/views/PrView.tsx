@@ -29,7 +29,15 @@ import { applicable, FreshnessNotice, reviewBaseline } from "../components/Fresh
 import { MergeRow } from "../components/Merge";
 import { triggerLabel } from "../components/RunHistory";
 import { RunStage, useNow } from "../components/Progress";
-import { Notice, Pill, Spinner, StatusDot, StatusPill, useToast } from "../components/ui";
+import {
+  Notice,
+  Pill,
+  Spinner,
+  StatusDot,
+  StatusPill,
+  ViewerApprovalPill,
+  useToast,
+} from "../components/ui";
 import {
   compatibleDraft,
   draftLabel,
@@ -588,6 +596,7 @@ export function PrView({ id, listed }: { id: string; listed: PullRequest | undef
         <div className="pr-title">
           <div className="row wrap">
             <StatusPill status={pr.status} />
+            <ViewerApprovalPill pr={pr} />
             <AutoSubmissionBadges state={pr.autoSubmission} />
             {pr.state !== "OPEN" && <Pill tone="neutral">{pr.state.toLowerCase()}</Pill>}
             {pr.requested && (

@@ -4,7 +4,7 @@ import { api, RequestError } from "../api/client";
 import { useApp } from "../app-context";
 import { ReviewControls } from "../components/ReviewControls";
 import { AutoSubmissionBadges } from "../components/AutoSubmission";
-import { Notice, StatusPill, useToast } from "../components/ui";
+import { Notice, StatusPill, ViewerApprovalPill, useToast } from "../components/ui";
 import { relativeTime, statusLabel } from "../lib/format";
 import {
   ageOf,
@@ -491,6 +491,7 @@ export function InboxView() {
                               </span>
                             )}
                             <StatusPill status={pr.status} />
+                            <ViewerApprovalPill pr={pr} />
                             <AutoSubmissionBadges state={pr.autoSubmission} />
                             <ReviewControls
                               pr={pr}
