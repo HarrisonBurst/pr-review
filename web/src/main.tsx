@@ -34,6 +34,8 @@ if (mock) {
     oauthScopes: params.get("oauthScopes") as never,
     oauthReturn: params.get("oauthReturn") as never,
     exclusions: params.get("exclusions") as never,
+    autoSubmission: params.get("autoSubmission") as never,
+    editIntent: params.get("editIntent") as never,
   });
   installMockApi(backend);
   if (params.has("oauthReturn"))

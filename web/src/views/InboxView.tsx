@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import type { AppState, ImportOperation, PrStatus, PullRequest } from "../../../shared/contracts";
 import { api, RequestError } from "../api/client";
 import { useApp } from "../app-context";
+import { AutoSubmissionBadges } from "../components/AutoSubmission";
 import { Notice, StatusPill, useToast } from "../components/ui";
 import { relativeTime, statusLabel } from "../lib/format";
 import {
@@ -489,6 +490,7 @@ export function InboxView() {
                               </span>
                             )}
                             <StatusPill status={pr.status} />
+                            <AutoSubmissionBadges state={pr.autoSubmission} />
                             {action && (
                               <button
                                 type="button"

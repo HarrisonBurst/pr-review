@@ -14,6 +14,9 @@ import {
   type IntegrationSessionSnapshot,
 } from "../shared/contracts.js";
 import type { ProgressReporter } from "./progress.js";
+import { acquireDiscussion, acquireReviewInventory } from "./discussion.js";
+import type { DiscussionSnapshot } from "../shared/contracts.js";
+import type { ReviewInventory } from "./publication.js";
 import {
   clampText,
   parseJson,
@@ -68,6 +71,8 @@ export class GithubRequestError extends Error {
 
 export interface GithubAdapter {
   readonly demo: boolean;
+  discussion?(pr: PullRequest): Promise<DiscussionSnapshot>;
+  reviewInventory?(pr: PullRequest): Promise<ReviewInventory>;
   health(): Promise<{ user: string | null; message: string }>;
   getPullRequest(
     repository: string,
@@ -642,6 +647,14 @@ export class GithubCliAdapter implements GithubAdapter {
       if (commits.length >= total || response.commits.length === 0) break;
     }
     return { status, commits, truncated: commits.length < total };
+  }
+
+  async discussion(pr: PullRequest): Promise<DiscussionSnapshot> {
+    return acquireDiscussion((args) => this.gh(args), pr);
+  }
+
+  async reviewInventory(pr: PullRequest): Promise<ReviewInventory> {
+    return acquireReviewInventory((args) => this.gh(args), pr);
   }
 
   async submitReview(

@@ -798,7 +798,7 @@ test("existing databases gain anchor fields and manual draft support without los
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
-      INSERT INTO drafts SELECT * FROM drafts_new;
+      INSERT INTO drafts SELECT id, pr_id, run_id, head_sha, version, overview, body, findings_json, verdict, created_at, updated_at FROM drafts_new;
       DROP TABLE drafts_new;
     `);
     raw
@@ -819,6 +819,10 @@ test("existing databases gain anchor fields and manual draft support without los
       { ...legacyFinding, side: "RIGHT", startLine: null, questionId: null },
     ]);
     assert.equal(migrated.version, 4);
+    assert.deepEqual(migrated.autoSubmission, {
+      provenance: null,
+      manualHold: null,
+    });
     assert.deepEqual(
       db.getRun(detail.runs[0]!.id)!.result!.findings[0],
       migrated.findings[0],

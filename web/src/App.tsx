@@ -202,7 +202,7 @@ function Shell({ mock }: { mock: boolean }) {
             {route.name === "settings" ? (
               <SettingsView />
             ) : route.name === "pr" ? (
-              <PrView id={route.id} listed={currentPr} />
+              <PrView key={route.id} id={route.id} listed={currentPr} />
             ) : !value.state.settings.repository ? (
               <SetupView />
             ) : (

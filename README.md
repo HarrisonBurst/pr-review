@@ -2,7 +2,7 @@
 
 Local PR Review is a single-user macOS app for reviewing GitHub pull requests with Claude Code, Codex or Pi and your own trusted review skill. It tracks requested, imported and previously reviewed/submitted open PRs until they close or merge, produces editable review drafts and lets you ask questions about selected code. You can also write comments without an AI review.
 
-Review runs stay separate from editable drafts. Re-review and AI revision proposals never silently replace manual edits. Publishing through the app requires a preview of the exact payload and your explicit confirmation.
+Review runs stay separate from editable drafts. Re-review and AI revision proposals never silently replace manual edits. Manual publishing requires an exact-payload preview and your explicit confirmation. A separate default-off author/action policy can authorize only untouched future automatic full-review drafts, subject to human-review, edit and submission safeguards.
 
 ## Before you start
 
@@ -50,10 +50,18 @@ On first launch:
 1. Enter `owner/repository` or import a PR URL.
 2. In Settings, leave automation off and choose an execution mode, harness, model and trusted skill. Follow that mode's [Save and consent requirements](docs/execution-modes.md).
 3. Sync or import to read GitHub data. Review, Re-review and Ask AI invoke the configured harness.
-4. Edit and Save a draft locally. AI revisions are proposals and never silently replace manual edits.
+4. Use Begin editing, wait for the server to record edit intent, then edit and Save locally. This permanently makes that draft manual-only. Previously submitted drafts remain editable after their write is confirmed; editing does not undo publication. AI revisions are proposals and never silently replace manual edits.
 5. Inspect the exact Preview payload. Confirm a submission only when you intend to publish it to GitHub.
 
 Connections for Isolated and Docker use separate app-owned authorization and explicit read grants. Authentication alone grants no reviewer tools, and Connected does not prove a successful content read. See [Connections](docs/execution-modes.md#connections) before granting provider access.
+
+## Optional automatic submission
+
+Leave Automatic submission Off unless you intend future reviews to publish without an individual confirmation. In Settings, add exact PR-author GitHub usernames, select Comment, Approve and/or Request changes separately in each row, then review and explicitly save that policy. New rows grant nothing. Comment cannot publish a result containing blocking findings; the other actions retain their actual GitHub verdicts.
+
+Saving this policy never enables polling, starts reviews or publishes existing drafts. Human-review requests override every author permission. Unsaved editing also pauses publication once Begin editing has been acknowledged by the server. Manual exact preview/submit remains available while automatic publication is held.
+
+The contextual detector currently supports captured Isolated Claude Main only. Pi, Codex, Docker, Dangerous and unsupported profiles show check-needed without model dispatch or fallback. Explicit Check can freshly read discussion and invoke the supported classifier; it is not just cached validation. See [automatic submission safeguards and limits](docs/automatic-submission.md) before opting in.
 
 ## Review skill basics
 
@@ -90,7 +98,8 @@ Invalid final output fails the run instead of creating a draft or revision propo
 
 ## Documentation
 
-- [Reviewing pull requests](docs/reviewing.md): inbox, drafts, comments, Ask AI, automation and concurrency.
+- [Reviewing pull requests](docs/reviewing.md): inbox, drafts, comments, Ask AI, draft-review automation and concurrency.
+- [Automatic submission](docs/automatic-submission.md): saved author/action consent, human-review overrides, detector support and recovery limits.
 - [Execution and Settings](docs/execution-modes.md): mode selection, model discovery, connections and upgrade consequences.
 - [Configuration and troubleshooting](docs/configuration.md): environment variables, storage, backups and common setup failures.
 - [Review skill output](docs/review-output.md) and [trusted sources](docs/trusted-sources.md): skill requirements and capture limits.

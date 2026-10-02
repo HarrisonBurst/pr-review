@@ -1,5 +1,12 @@
 import {
   automationOff,
+  autoSubmissionConfirmation,
+  autoSubmissionReenableConfirmation,
+  normalizeAutoSubmissionAuthors,
+  type AutoSubmissionUpdate,
+  type DraftEditIntent,
+  type HumanReviewAcknowledgment,
+  type AutoSubmissionReenable,
   dangerousConfirmation,
   dockerApprovalConfirmation,
   dockerSetupConfirmation,
@@ -98,6 +105,8 @@ interface MockOptions {
   oauthScopes?: OAuthScopeCase;
   oauthReturn?: "valid" | "stale";
   exclusions?: "none";
+  autoSubmission?: "human" | "check-needed" | "off-hold";
+  editIntent?: "locked" | "fail" | "slow" | "stale";
 }
 
 export type OAuthScopeCase =
@@ -408,6 +417,11 @@ export class MockBackend {
   freshness: Record<string, Freshness | null> = {};
   questions: Record<string, Question[]> = {};
   checkCalls = 0;
+  editIntentBodies: DraftEditIntent[] = [];
+  autoSubmissionBodies: AutoSubmissionUpdate[] = [];
+  humanAcknowledgments: HumanReviewAcknowledgment[] = [];
+  autoReenableBodies: AutoSubmissionReenable[] = [];
+  autoCheckCalls = 0;
   modelDiscoveryCalls: HarnessId[] = [];
   oauthStates: Record<string, MockOAuthState> = {};
   oauthActions: string[] = [];
@@ -436,6 +450,19 @@ export class MockBackend {
       this.prs = [];
       this.health.lastPollAt = null;
     }
+    if (options.emptySetup) this.settings.autoSubmission!.repository = "";
+    if (options.autoSubmission) {
+      const pr = this.prs.find((item) => item.id === "pr-482")!;
+      pr.autoSubmission = fixtures.autoSubmissionState(
+        options.autoSubmission === "check-needed"
+          ? "check_needed"
+          : options.autoSubmission === "off-hold"
+            ? "off"
+            : "human_review_requested",
+        pr.headSha,
+      );
+    }
+    if (options.editIntent) delete this.drafts["pr-482"]![0]!.autoSubmission;
     const seed =
       harnessSeed[options.harness === "unavailable" ? "saved" : (options.harness ?? "saved")];
     this.harness = structuredClone(seed.settings);
@@ -2094,7 +2121,7 @@ export class MockBackend {
     return () => this.listeners.delete(listener);
   }
 
-  hold(scope: "sync" | number): MockHold {
+  hold(scope: "sync" | "edit-intent" | number): MockHold {
     let enter!: () => void;
     let resolve!: () => void;
     let reject!: (error: Error) => void;
@@ -2220,6 +2247,136 @@ export class MockBackend {
       freshness: this.freshness[id] ?? null,
       questions: this.questions[id] ?? [],
     });
+  }
+
+  updateAutoSubmission(body: AutoSubmissionUpdate) {
+    this.autoSubmissionBodies.push(structuredClone(body));
+    const current = this.settings.autoSubmission!;
+    if (
+      !body.repository ||
+      body.repository !== this.settings.repository ||
+      body.expectedVersion !== current.version
+    )
+      throw new MockError(
+        409,
+        "SYNTHETIC: saved repository or policy version changed",
+        "auto_submission_conflict",
+      );
+    const authors = normalizeAutoSubmissionAuthors(body.authors);
+    if (!authors || (body.enabled && body.confirmation !== autoSubmissionConfirmation))
+      throw new MockError(
+        400,
+        "SYNTHETIC: invalid author table or missing exact consent",
+        "invalid_auto_submission",
+      );
+    this.settings.autoSubmission = {
+      repository: body.repository,
+      enabled: body.enabled,
+      authors,
+      version: current.version + 1,
+      consentedAt: body.enabled ? this.now() : null,
+    };
+    this.emit();
+    return this.state();
+  }
+
+  async draftEditIntent(id: string, intent: DraftEditIntent) {
+    this.editIntentBodies.push(structuredClone(intent));
+    await this.held("edit-intent");
+    if (this.options.editIntent === "slow")
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+    if (this.options.editIntent === "fail")
+      throw new MockError(503, "SYNTHETIC: edit intent unavailable", "fixture_unavailable");
+    const draft = this.draft(id, intent.draftId);
+    if (intent.version !== draft.version || this.options.editIntent === "stale")
+      throw new MockError(409, "SYNTHETIC: draft version changed", "draft_conflict");
+    if (
+      (this.submissions[id] ?? []).some(
+        (submission) =>
+          submission.authority?.kind === "automatic" &&
+          submission.authority.draftId === draft.id &&
+          submission.authority.draftVersion === intent.version &&
+          (submission.status === "submitting" || submission.status === "uncertain"),
+      )
+    )
+      throw new MockError(
+        409,
+        "SYNTHETIC: publication is in flight or uncertain; intent cannot cancel it",
+        "draft_conflict",
+      );
+    draft.autoSubmission ??= { provenance: null, manualHold: null };
+    draft.autoSubmission.manualHold ??= { reason: "edit_intent", at: this.now() };
+    this.emit(id);
+    return this.detail(id);
+  }
+
+  checkAutoSubmission(id: string) {
+    this.autoCheckCalls += 1;
+    const pr = this.pr(id);
+    pr.autoSubmission ??= fixtures.autoSubmissionState("check_needed", pr.headSha);
+    const state = pr.autoSubmission;
+    const incomplete = this.options.autoSubmission === "check-needed";
+    const active = state.evidence.some((item) => !item.acknowledgment);
+    state.check = {
+      ...fixtures.autoSubmissionState(incomplete ? "check_needed" : "held", pr.headSha).check!,
+      status: incomplete ? "check_needed" : active ? "human_review_requested" : "clear",
+      checkedAt: this.now(),
+      message: "SYNTHETIC: explicit inert discussion check only.",
+    };
+    state.status = incomplete ? "check_needed" : active ? "human_review_requested" : "held";
+    state.version += 1;
+    this.emit(id);
+    return this.detail(id);
+  }
+
+  acknowledgeHumanReview(id: string, body: HumanReviewAcknowledgment) {
+    this.humanAcknowledgments.push(structuredClone(body));
+    const state = this.pr(id).autoSubmission;
+    const evidence = state?.evidence.find((item) => item.id === body.evidenceId);
+    if (
+      !state ||
+      state.version !== body.expectedVersion ||
+      !evidence ||
+      JSON.stringify(evidence.source) !== JSON.stringify(body.source)
+    )
+      throw new MockError(409, "SYNTHETIC: evidence version changed", "auto_submission_conflict");
+    evidence.acknowledgment = { action: body.action, at: this.now() };
+    state.version += 1;
+    state.status = "held";
+    this.emit(id);
+    return this.detail(id);
+  }
+
+  reenableAutoSubmission(id: string, body: AutoSubmissionReenable) {
+    this.autoReenableBodies.push(structuredClone(body));
+    const pr = this.pr(id);
+    const state = pr.autoSubmission;
+    if (!state || state.version !== body.expectedVersion)
+      throw new MockError(
+        409,
+        "SYNTHETIC: automatic submission state changed",
+        "auto_submission_conflict",
+      );
+    if (
+      body.confirmation !== autoSubmissionReenableConfirmation ||
+      state.evidence.some((item) => !item.acknowledgment) ||
+      state.check?.status !== "clear" ||
+      !state.check.coverage.complete ||
+      state.check.headSha !== pr.headSha
+    )
+      throw new MockError(
+        409,
+        "SYNTHETIC: a fresh clear check and all acknowledgments are required",
+        "auto_submission_held",
+      );
+    state.reenableRequired = false;
+    state.version += 1;
+    state.generation += 1;
+    state.status = "off";
+    state.message =
+      "SYNTHETIC: re-enabled only for later reviews; saved policy is still off. Draft edit holds are unchanged.";
+    this.emit(id);
+    return this.detail(id);
   }
 
   createDraft(id: string) {
@@ -2534,6 +2691,14 @@ export class MockBackend {
         "invalid_settings",
       );
     const { automation, ...rest } = update;
+    if (update.repository !== undefined && update.repository !== this.settings.repository)
+      this.settings.autoSubmission = {
+        repository: update.repository,
+        enabled: false,
+        authors: [],
+        version: 0,
+        consentedAt: null,
+      };
     Object.assign(this.settings, rest);
     if (automation) Object.assign(this.settings.automation, automation);
     if (!this.settings.repository) this.settings.automation = { ...automationOff };
@@ -2865,6 +3030,8 @@ export class MockBackend {
         "stale_draft",
       );
     }
+    draft.autoSubmission ??= { provenance: null, manualHold: null };
+    draft.autoSubmission.manualHold ??= { reason: "saved_edit", at: this.now() };
     const stored = new Map(draft.findings.map((f) => [f.id, f.evidence]));
     const questionEvidence = (f: Finding) => {
       const q = (this.questions[id] ?? []).find((item) => item.id === f.questionId);
@@ -2960,6 +3127,8 @@ export class MockBackend {
         "stale_proposal",
       );
     }
+    draft.autoSubmission ??= { provenance: null, manualHold: null };
+    draft.autoSubmission.manualHold ??= { reason: "revision", at: this.now() };
     this.applyResult(draft, proposal.result);
     proposal.status = "accepted";
     if (this.latest(id)?.id === draft.id) this.recount(id);
@@ -3131,6 +3300,8 @@ export class MockBackend {
       if (action && !sub && method === "PATCH") return this.updateIntegration(action, body);
       if (action && sub === "test" && method === "POST") return this.testIntegration(action);
     }
+    if (root === "settings" && id === "auto-submission" && method === "PATCH")
+      return this.updateAutoSubmission(b);
     if (root === "settings" && method === "PATCH") return this.updateSettings(b);
     if (root === "sync" && method === "POST") return this.sync();
     if (root === "prs" && id === "import" && method === "POST") return this.importPr(b.url);
@@ -3139,6 +3310,13 @@ export class MockBackend {
       if (action === "review" && method === "POST") return this.review(id);
       if (action === "check" && method === "POST") return this.check(id);
       if (action === "automation" && method === "PATCH") return this.updateAutomation(id, b);
+      if (action === "draft" && sub === "edit-intent" && method === "POST")
+        return this.draftEditIntent(id, b);
+      if (action === "auto-submission" && method === "POST") {
+        if (sub === "check") return this.checkAutoSubmission(id);
+        if (sub === "acknowledge") return this.acknowledgeHumanReview(id, b);
+        if (sub === "re-enable") return this.reenableAutoSubmission(id, b);
+      }
       if (action === "draft" && !sub && method === "PUT") return this.saveDraft(id, b);
       if (action === "drafts" && !sub && method === "POST") return this.createDraft(id);
       if (action === "questions" && !sub && method === "POST") return this.ask(id, b);

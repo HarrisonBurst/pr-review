@@ -251,6 +251,7 @@ function completedRun(
     finishedAt: "2026-01-01T00:00:02.000Z",
     error: null,
     log: "deterministic projection fixture",
+    autoSubmission: null,
     reviewer: reviewerSettings,
     result: {
       overview: "Fixture overview",
