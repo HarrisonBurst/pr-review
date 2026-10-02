@@ -155,6 +155,77 @@ test("recorded head SHA fallback retains the same scoped GH route", async () => 
   }
 });
 
+test("a moved live PR ref still acquires the recorded head through the scoped SHA route", async () => {
+  const f = await githubAcquisitionFixture();
+  try {
+    const repository = path.join(f.root, "fixture/repository.git");
+    await f.git(repository, "checkout", "snapshot");
+    await f.git(
+      repository,
+      "commit",
+      "--allow-empty",
+      "-m",
+      "Synthetic divergent live head",
+    );
+    const liveHead = await f.git(repository, "rev-parse", "HEAD");
+    await f.git(repository, "update-ref", "refs/pull/7/head", liveHead);
+    const checkout = new SourceCheckout(f.env);
+    await checkout.prepare(f.identity, f.source, f.checkout);
+    assert.equal(await checkout.matches(f.identity, f.checkout), true);
+    assert.equal(
+      await readFile(path.join(f.checkout, "code.txt"), "utf8"),
+      "recorded head\n",
+    );
+    const calls = await f.calls();
+    const cloneIndex = calls.findIndex((call) => call.kind === "clone");
+    assert.equal(
+      calls.slice(cloneIndex + 1).filter((call) => call.operation === "get")
+        .length,
+      3,
+    );
+    const config = await readFile(path.join(f.checkout, ".git/config"), "utf8");
+    assert.equal(/credential|auth git-credential/.test(config), false);
+    assert.equal(JSON.stringify({ calls, config }).includes(f.canary), false);
+  } finally {
+    await f.close();
+  }
+});
+
+test("an unavailable captured head never falls forward to a successfully fetched live PR ref", async (t) => {
+  const f = await githubAcquisitionFixture();
+  try {
+    const repository = path.join(f.root, "fixture/repository.git");
+    await f.git(repository, "checkout", "snapshot");
+    await f.git(repository, "update-ref", "refs/pull/7/head", "HEAD");
+    await f.git(repository, "update-ref", "-d", "refs/heads/topic");
+    await f.git(repository, "reflog", "expire", "--expire=now", "--all");
+    await f.git(repository, "prune", "--expire=now");
+    const checkout = new SourceCheckout(f.env);
+    const git = checkout.git.bind(checkout);
+    const targets: string[] = [];
+    t.mock.method(
+      checkout,
+      "git",
+      async (args: string[], cwd: string, signal?: AbortSignal) => {
+        if (args.includes("fetch")) targets.push(args.at(-1)!);
+        return git(args, cwd, signal);
+      },
+    );
+    await assert.rejects(
+      checkout.prepare(f.identity, f.source, f.checkout),
+      /Unable to prepare recorded head/,
+    );
+    assert.deepEqual(targets, [
+      f.identity.baseSha,
+      "pull/7/head",
+      f.identity.headSha,
+    ]);
+    assert.equal(await checkout.matches(f.identity, f.checkout), false);
+  } finally {
+    await f.close();
+  }
+});
+
 for (const state of ["unavailable", "denied"])
   test(`synthetic ${state} credentials fail at recorded base without prompts, retries or secret diagnostics`, async () => {
     const f = await githubAcquisitionFixture();

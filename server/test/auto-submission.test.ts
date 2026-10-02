@@ -32,6 +32,84 @@ test("inert end-to-end automatic draft baseline never publishes without separate
     assert.equal(f.service.getState().settings.autoSubmission?.enabled, false);
   }));
 
+test("a check-needed publication hold preserves automatic drafts and exact confirmed-submission settlement", () =>
+  fixture(async (f) => {
+    f.reviewer.result.verdict = "APPROVE";
+    await f.service.manualReview(PR);
+    await f.service.processJob(f.service.db.listJobs("queued")[0]!);
+    const initial = f.service.getDetail(PR).draft!;
+    f.service.updateDraft(PR, {
+      draftId: initial.id,
+      version: initial.version,
+      body: "SYNTHETIC retained manual edit",
+      findings: initial.findings,
+      verdict: "APPROVE",
+    });
+    const edited = f.service.getDetail(PR).draft!;
+    await f.service.submit(
+      PR,
+      (await f.service.preview(PR, edited.id, edited.version)).id,
+    );
+    assert.equal(f.service.getDetail(PR).pr.status, "submitted");
+    f.save(["APPROVE"]);
+    f.classifier.fail = true;
+    await f.service.checkAutoSubmission(PR);
+    f.github.current.pr.headSha = "synthetic-new-head-after-approval";
+    await f.automaticReview();
+    const automatic = f.service.getDetail(PR);
+    assert.equal(automatic.runs[0]?.trigger, "new_commits");
+    assert.equal(automatic.runs[0]?.status, "completed");
+    assert.equal(automatic.pr.autoSubmission?.check?.status, "check_needed");
+    assert.equal(automatic.pr.status, "ready");
+    assert.equal(
+      automatic.drafts.find((draft) => draft.id === edited.id)?.body,
+      edited.body,
+    );
+    assert.equal(f.github.writes.length, 1);
+    const draft = automatic.draft!;
+    const preview = await f.service.preview(PR, draft.id, draft.version);
+    assert.equal(f.service.getDetail(PR).submissions.length, 1);
+    await f.service.manualReview(PR);
+    await f.service.processJob(f.service.db.listJobs("queued")[0]!);
+    const latest = f.service.getDetail(PR).draft!;
+    assert.notEqual(latest.id, draft.id);
+    await f.service.submit(PR, preview.id);
+    assert.equal(f.service.getDetail(PR).pr.status, "ready");
+    const currentPreview = await f.service.preview(
+      PR,
+      latest.id,
+      latest.version,
+    );
+    await f.service.submit(PR, currentPreview.id);
+    assert.equal(f.service.getDetail(PR).pr.status, "submitted");
+    f.service.updateDraft(PR, {
+      draftId: latest.id,
+      version: latest.version,
+      body: "SYNTHETIC edited after confirmed submission",
+      findings: latest.findings,
+      verdict: "APPROVE",
+    });
+    assert.equal(f.service.getDetail(PR).pr.status, "ready");
+    const changed = f.service.getDetail(PR).draft!;
+    const stale = await f.service.preview(PR, changed.id, changed.version);
+    f.service.updateDraft(PR, {
+      draftId: changed.id,
+      version: changed.version,
+      body: "SYNTHETIC later saved version",
+      findings: changed.findings,
+      verdict: "APPROVE",
+    });
+    await assert.rejects(
+      f.service.submit(PR, stale.id),
+      /preview does not match/,
+    );
+    await f.restart();
+    assert.equal(f.service.getDetail(PR).pr.status, "ready");
+    assert.equal(f.service.getDetail(PR).draft?.version, changed.version + 1);
+    assert.equal(f.service.getDetail(PR).submissions.length, 3);
+    assert.equal(f.github.writes.length, 3);
+  }));
+
 test("saved publication policy is independent, empty by default and explicit future-only consent", () =>
   fixture(async (f) => {
     assert.deepEqual(f.service.getState().settings.autoSubmission, {
