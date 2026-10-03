@@ -842,6 +842,7 @@ export function normalizeAutoSubmissionAuthors(
 }
 
 export interface AutomaticReviewProvenance {
+  outputContract?: "1.1";
   repository: string;
   policyVersion: number;
   consentedAt: string;
@@ -911,6 +912,27 @@ export interface HumanReviewClassifierOutput {
   results: HumanReviewClassification[];
 }
 
+export interface HumanReviewRequest {
+  version: 1;
+  contextVersion: string;
+  evidence: Array<{
+    source: DiscussionSourceVersion;
+    author: string;
+    quote: string;
+    url: string;
+  }>;
+}
+
+export interface HumanReviewDetection {
+  status: "found" | "not_found" | "unavailable";
+  runId: string;
+  headSha: string;
+  contextVersion: string | null;
+  observedAt: string;
+  coverage: DiscussionCoverage;
+  message: string;
+}
+
 export interface HumanReviewEvidence {
   id: string;
   source: DiscussionSourceVersion;
@@ -943,16 +965,23 @@ export interface AutoSubmissionState {
     | "off"
     | "not_authorized"
     | "manual_only"
-    | "checking"
     | "eligible"
     | "human_review_requested"
-    | "check_needed"
+    | "failed"
+    | "uncertain"
     | "held"
     | "submitted";
   message: string;
   draftId: string | null;
   evidence: HumanReviewEvidence[];
   check: HumanReviewCheck | null;
+  detection?: HumanReviewDetection | null;
+  failure?: {
+    step: "publication" | "provenance" | "reconciliation";
+    message: string;
+    draftId: string | null;
+    at: string;
+  } | null;
   reenableRequired: boolean;
 }
 
@@ -992,7 +1021,7 @@ export type SubmissionAuthority =
       draftId: string;
       draftVersion: number;
       headSha: string;
-      discussionRevision: string;
+      discussionRevision: string | null;
     };
 
 export interface AppSettings {
@@ -1126,12 +1155,13 @@ export function inboxEligible(pr: PullRequest): boolean {
   );
 }
 
-export const reviewOutputVersion = "1.0";
+export const reviewOutputVersion = "1.1";
 
 export interface ReviewOutputCheck {
   version: typeof reviewOutputVersion;
   status: "valid" | "invalid";
   diagnostics: string[];
+  extensionDiagnostics: string[];
 }
 
 export interface ReviewResult {
@@ -1140,6 +1170,7 @@ export interface ReviewResult {
   findings: Finding[];
   verdict: ReviewVerdict;
   rationale: string;
+  humanReviewRequest?: HumanReviewRequest | null;
 }
 
 export type RunPhaseId =

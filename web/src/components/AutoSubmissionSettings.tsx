@@ -152,8 +152,9 @@ export function AutoSubmissionSettings() {
       <p className="small muted">
         Independent of the four switches above. Saving never turns on polling or reviews, queues
         work, or authorizes old, manual, local or revision drafts. Only untouched future automatic
-        full reviews can qualify. Human requests, uncertain checks and editing pause automatic
-        publication; manual exact preview and submission stay available.
+        full reviews can qualify. Known human requests, uncertain writes and editing pause automatic
+        publication. Detection uses the same review pass; unavailable detection is nonblocking.
+        Manual exact preview and submission stay available.
       </p>
       <form className="row wrap" onSubmit={add} aria-label="Add automatic submission author">
         <div className="field grow">

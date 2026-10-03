@@ -7,12 +7,7 @@ import { requireSupportedExecution } from "./supported.js";
 import { isolatedEnvironment } from "./isolated-auth.js";
 import path from "node:path";
 import { parseJson, runCommand } from "../util.js";
-import {
-  ClaudeStream,
-  CodexStream,
-  PiStream,
-  JsonLineDecoder,
-} from "../stream.js";
+import { ClaudeStream, CodexStream, PiStream } from "../stream.js";
 import { validateSchema } from "../schema.js";
 import type { ExecutionRequest } from "./executor.js";
 
@@ -24,16 +19,6 @@ export class HostExecutor {
   ): Promise<{ value: unknown; log: string }> {
     requireSupportedExecution(request.settings);
     const skill = request.settings.skillExecution!;
-    const classification = request.kind === "classification";
-    if (
-      classification &&
-      (skill.mode !== "separated" ||
-        skill.harness !== "claude" ||
-        skill.policy?.profile !== "restricted-native-1")
-    )
-      throw new Error(
-        "No enforced zero-tool classifier is supported for this captured mode/harness/provider; no dispatch or fallback",
-      );
     if (skill.mode === "docker")
       throw new Error("Docker execution cannot fall back to the host");
     const isolated = skill?.mode === "separated";
@@ -45,7 +30,7 @@ export class HostExecutor {
       throw new Error(
         "Dangerous host execution requires captured explicit consent; no fallback is permitted",
       );
-    if (skill && request.kind !== "question" && !classification) {
+    if (skill && request.kind !== "question") {
       const diagnostics = skillCompatibility(
         skill.skill,
         skill.mode,
@@ -55,10 +40,9 @@ export class HostExecutor {
     }
     request.signal?.throwIfAborted();
     const source = await request.prepare(request.signal);
-    const skillPath =
-      skill && !classification
-        ? await materializeSkill(skill.skill, source)
-        : request.settings.skillPath;
+    const skillPath = skill
+      ? await materializeSkill(skill.skill, source)
+      : request.settings.skillPath;
     const policy = isolated ? skill?.policy : undefined;
     if (policy && (policy.version !== 1 || policy.harness !== skill?.harness))
       throw new Error("Unsupported or mismatched captured native policy");
@@ -67,22 +51,20 @@ export class HostExecutor {
         recursive: true,
         force: true,
       });
-    const library =
-      policy && !classification
-        ? await Promise.all(
-            policy.library.skills.map((item) => materializeSkill(item, source)),
-          )
-        : [];
-    const tools =
-      skill && !classification
-        ? await localTools(
-            source,
-            isolated,
-            policy ? request.providers : undefined,
-            policy ? request.integrationSnapshot : undefined,
-            request.signal,
-          )
-        : null;
+    const library = policy
+      ? await Promise.all(
+          policy.library.skills.map((item) => materializeSkill(item, source)),
+        )
+      : [];
+    const tools = skill
+      ? await localTools(
+          source,
+          isolated,
+          policy ? request.providers : undefined,
+          policy ? request.integrationSnapshot : undefined,
+          request.signal,
+        )
+      : null;
     let nativeHome: string | undefined;
     try {
       const projection = policy
@@ -99,28 +81,26 @@ export class HostExecutor {
         "/source/checkout",
         path.join(source, "checkout"),
       );
-      const prompt = classification
-        ? `${rolePrompt}\nReturn exactly one JSON object matching this schema, without tools:\n${JSON.stringify(request.schema)}`
-        : [
-            skill?.version === 3 ? "" : rolePrompt,
-            request.kind === "question"
-              ? ""
-              : `Follow the selected skill at ${skillPath}. Resolve its relative resources from ${path.dirname(skillPath)}. ${skill?.version === 3 ? "Use its review rubric. App-owned role instructions below override only reviewer orchestration and model selection." : "Preserve its own orchestration; do not invent extra reviewers."}\n${await readFile(skillPath, "utf8")}`,
-            skill?.version === 3 ? rolePrompt : "",
-            library.length
-              ? `Trusted skill library (instructions/resources only, no permission grants). Use read_source on these entries on demand; native activation requiring scripts/interpolation/hooks/subagents is disabled:\n${library
-                  .map((file, index) => {
-                    const entry = policy!.library.skills[index];
-                    const text = entry.files.find(
-                      (item) => item.sourcePath === entry.path,
-                    )!.content;
-                    return `${file}\n${text.match(/^name:.*$/m)?.[0] ?? entry.directory}\n${text.match(/^description:.*$/m)?.[0] ?? ""}`;
-                  })
-                  .join("\n")}`
-              : "",
-            "Return one JSON object matching this schema as the final answer:",
-            JSON.stringify(request.schema),
-          ].join("\n\n");
+      const prompt = [
+        skill?.version === 3 ? "" : rolePrompt,
+        request.kind === "question"
+          ? ""
+          : `Follow the selected skill at ${skillPath}. Resolve its relative resources from ${path.dirname(skillPath)}. ${skill?.version === 3 ? "Use its review rubric. App-owned role instructions below override only reviewer orchestration and model selection." : "Preserve its own orchestration; do not invent extra reviewers."}\n${await readFile(skillPath, "utf8")}`,
+        skill?.version === 3 ? rolePrompt : "",
+        library.length
+          ? `Trusted skill library (instructions/resources only, no permission grants). Use read_source on these entries on demand; native activation requiring scripts/interpolation/hooks/subagents is disabled:\n${library
+              .map((file, index) => {
+                const entry = policy!.library.skills[index];
+                const text = entry.files.find(
+                  (item) => item.sourcePath === entry.path,
+                )!.content;
+                return `${file}\n${text.match(/^name:.*$/m)?.[0] ?? entry.directory}\n${text.match(/^description:.*$/m)?.[0] ?? ""}`;
+              })
+              .join("\n")}`
+          : "",
+        "Return one JSON object matching this schema as the final answer:",
+        JSON.stringify(request.schema),
+      ].join("\n\n");
       const harness = skill?.harness ?? snapshot!.harness;
       const args =
         harness === "claude"
@@ -153,19 +133,10 @@ export class HostExecutor {
                     tools?.names
                       .map((name) => `mcp__review__${name}`)
                       .join(",") ?? "",
-                    ...(classification
-                      ? [
-                          "--mcp-config",
-                          '{"mcpServers":{}}',
-                          "--max-turns",
-                          "1",
-                        ]
-                      : []),
                   ]
                 : ["--dangerously-skip-permissions"]),
-              ...(classification
-                ? []
-                : ["--json-schema", JSON.stringify(request.schema)]),
+              "--json-schema",
+              JSON.stringify(request.schema),
             ]
           : harness === "codex"
             ? [
@@ -330,40 +301,22 @@ export class HostExecutor {
           : harness === "codex"
             ? new CodexStream(progress)
             : new PiStream(progress);
-      let classifierInitialized = false;
-      let classifierTools = false;
-      const classifierFrames = classification
-        ? new JsonLineDecoder((frame) => {
-            if (frame.type === "system" && frame.subtype === "init") {
-              classifierInitialized = true;
-              if (
-                !Array.isArray(frame.tools) ||
-                frame.tools.length !== 0 ||
-                !Array.isArray(frame.mcp_servers) ||
-                frame.mcp_servers.length !== 0
-              )
-                classifierTools = true;
-            }
-          })
-        : null;
       const result = await runCommand(harness, args, {
         cwd: source,
         env,
         input: prompt,
         signal: request.signal,
-        timeoutMs: classification ? 60_000 : 20 * 60_000,
+        timeoutMs: 20 * 60_000,
         maxOutputBytes: 200_000,
         onStdout: (chunk) => {
           stream.decoder.push(chunk);
-          classifierFrames?.push(chunk);
         },
       });
       request.signal?.throwIfAborted();
       stream.decoder.end();
-      classifierFrames?.end();
       if (result.code !== 0 || result.timedOut || result.aborted)
         throw new Error(
-          `${isolated ? "Isolated" : "Dangerous"} ${harness} ${result.timedOut ? (classification ? "classifier timed out after one minute" : "timed out after 20 minutes") : `process failed (exit ${result.code})`}; no fallback was used`,
+          `${isolated ? "Isolated" : "Dangerous"} ${harness} ${result.timedOut ? "timed out after 20 minutes" : `process failed (exit ${result.code})`}; no fallback was used`,
         );
       if (
         stream.decoder.stats.malformed ||
@@ -381,16 +334,6 @@ export class HostExecutor {
           `Host harness did not produce one complete successful structured result (${stream.decoder.diagnostic()})`,
         );
       if (
-        classification &&
-        (!classifierInitialized ||
-          classifierTools ||
-          !(stream instanceof ClaudeStream) ||
-          stream.toolCalls !== 0)
-      )
-        throw new Error(
-          "Classifier emitted a forbidden tool attempt; result rejected",
-        );
-      if (
         projection?.secrets.some(
           (secret) =>
             secret &&
@@ -405,12 +348,7 @@ export class HostExecutor {
         );
       const value =
         stream instanceof ClaudeStream
-          ? classification
-            ? parseJson<unknown>(
-                String(stream.envelope!.result),
-                "Classifier final result",
-              )
-            : stream.envelope!.structured_output
+          ? stream.envelope!.structured_output
           : parseJson<unknown>(
               stream.lastMessage!,
               "Host harness final result",

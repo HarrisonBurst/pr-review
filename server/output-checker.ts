@@ -2,7 +2,7 @@ import {
   reviewOutputVersion,
   type ReviewOutputCheck,
 } from "../shared/contracts.js";
-import { validateReviewResult } from "./review-output.js";
+import { humanReviewExtension, validateReviewResult } from "./review-output.js";
 
 export const checkerGuidance =
   "Before returning a review payload, call check_review_output with {candidate: JSON.stringify(payload)}. It uses the same validation as final ingestion and reports the first field error. A valid format is not correctness, approval or permission to publish. Return the payload itself, not the checker response or a harness envelope.";
@@ -37,12 +37,20 @@ export function checkReviewOutput(candidate: unknown): ReviewOutputCheck {
       );
     }
     validateReviewResult(value);
-    return { version: reviewOutputVersion, status: "valid", diagnostics: [] };
+    return {
+      version: reviewOutputVersion,
+      status: "valid",
+      diagnostics: [],
+      extensionDiagnostics: humanReviewExtension(
+        (value as Record<string, unknown>).humanReviewRequest,
+      ).diagnostics,
+    };
   } catch (error) {
     return {
       version: reviewOutputVersion,
       status: "invalid",
       diagnostics: [error instanceof Error ? error.message : String(error)],
+      extensionDiagnostics: [],
     };
   }
 }

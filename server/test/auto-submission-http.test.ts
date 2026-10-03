@@ -149,16 +149,22 @@ test("inert HTTP policy/edit-intent/hold APIs preserve exact manual preview and 
       200,
     );
     f.github.sources = [fixtureSource()];
-    f.classifier.decisions.set("synthetic-comment", "requested");
-    const checked = await request(`${prefix}/auto-submission/check`);
-    const detail = (await checked.json()) as PullRequestDetail;
+    f.reviewer.decisions.set("synthetic-comment", "requested");
+    await f.manualReview();
+    assert.equal(
+      (await request(`${prefix}/auto-submission/check`)).status,
+      404,
+    );
+    const detail = (await (
+      await fetch(`${base}${prefix}`)
+    ).json()) as PullRequestDetail;
     assert.equal(detail.pr.autoSubmission?.status, "human_review_requested");
     const evidence = detail.pr.autoSubmission!.evidence[0]!;
     const state = detail.pr.autoSubmission!;
-    const before = f.classifier.calls;
+    const before = f.reviewer.calls;
     await fetch(`${base}/state`);
     await fetch(`${base}${prefix}`);
-    assert.equal(f.classifier.calls, before);
+    assert.equal(f.reviewer.calls, before);
     assert.equal(
       (
         await request(`${prefix}/auto-submission/acknowledge`, {

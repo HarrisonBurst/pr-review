@@ -173,8 +173,8 @@ export const api = {
     }),
   draftEditIntent: (id: string, intent: DraftEditIntent) =>
     request<PullRequestDetail>(`${prPath(id)}/draft/edit-intent`, json(intent)),
-  checkAutoSubmission: (id: string) =>
-    request<PullRequestDetail>(`${prPath(id)}/auto-submission/check`, json({})),
+  reconcileAutoSubmission: (id: string) =>
+    request<PullRequestDetail>(`${prPath(id)}/auto-submission/reconcile`, json({})),
   acknowledgeHumanReview: (id: string, body: HumanReviewAcknowledgment) =>
     request<PullRequestDetail>(`${prPath(id)}/auto-submission/acknowledge`, json(body)),
   reenableAutoSubmission: (id: string, body: AutoSubmissionReenable) =>

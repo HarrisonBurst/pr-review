@@ -48,7 +48,7 @@ import {
 } from "./broker.js";
 
 export interface ExecutionRequest {
-  kind?: "review" | "question" | "classification";
+  kind?: "review" | "question";
   runId: string;
   settings: ReviewerSettings;
   prepare: (signal?: AbortSignal) => Promise<string>;
@@ -383,12 +383,6 @@ export class DockerExecutor {
   }
 
   execute(request: ExecutionRequest): Promise<{ value: unknown; log: string }> {
-    if (request.kind === "classification")
-      return Promise.reject(
-        new Error(
-          "This pinned Docker runtime has no enforced zero-tool classifier; no container, host fallback or model dispatch was started",
-        ),
-      );
     return this.track(request.signal, (signal) =>
       this.run({ ...request, signal }),
     );

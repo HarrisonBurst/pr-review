@@ -1156,8 +1156,18 @@ export function createHttpServer(
             parts[2] === "auto-submission"
           ) {
             const body = bodyObject(await readBody(request));
-            if (parts[3] === "check" && Object.keys(body).length === 0) {
-              sendJson(response, 200, await service.checkAutoSubmission(prId));
+            if (parts[3] === "check")
+              throw new ServiceError(
+                404,
+                "not_found",
+                "Independent classifier checks are retired",
+              );
+            if (parts[3] === "reconcile" && Object.keys(body).length === 0) {
+              sendJson(
+                response,
+                200,
+                await service.reconcileAutoSubmission(prId),
+              );
               return;
             }
             if (

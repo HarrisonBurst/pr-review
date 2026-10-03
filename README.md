@@ -61,13 +61,13 @@ Leave Automatic submission Off unless you intend future reviews to publish witho
 
 Saving this policy never enables polling, starts reviews or publishes existing drafts. Human-review requests override every author permission. Unsaved editing also pauses publication once Begin editing has been acknowledged by the server. Manual exact preview/submit remains available while automatic publication is held.
 
-The contextual detector currently supports captured Isolated Claude Main only. Pi, Codex, Docker, Dangerous and unsupported profiles show check-needed without model dispatch or fallback. Explicit Check can freshly read discussion and invoke the supported classifier; it is not just cached validation. See [automatic submission safeguards and limits](docs/automatic-submission.md) before opting in.
+Human-request detection uses the same configured review pass in every supported mode, without an extra model call or classifier Check. Source-backed requests persist until resolved/dismissed and explicitly resumed for later reviews. Missing, malformed or unavailable observations stay nonblocking and cannot clear known requests. Pre-rollout drafts stay manual; edits, freshness, consent, writer identity, exact payload and uncertain-write safeguards remain strict. See [automatic submission safeguards and limits](docs/automatic-submission.md) before opting in.
 
 ## Review skill basics
 
 Select a trusted absolute `.md` entry in Settings, with its required companion resources available. The app supplies the final JSON schema and output instructions, so your skill does not need to repeat them. It should allow that output rather than insist on a prose-only final answer.
 
-Full reviews and AI revisions must return one JSON object with `overview`, `body`, `findings`, `verdict` and `rationale`. Markdown inside the text fields is fine; no particular headings are required. `overview`, finding `evidence` and `rationale` stay private, while `body` and included finding bodies can enter the confirmed GitHub payload.
+New full reviews and AI revisions use output contract 1.1: one JSON object with `overview`, `body`, `findings`, `verdict`, `rationale` and nullable `humanReviewRequest` from the same generation pass. Core-valid legacy or malformed extension output stays valid with advisory unavailable detection. Markdown inside the text fields is fine; no particular headings are required. `overview`, finding `evidence` and `rationale` stay private, while `body` and included finding bodies can enter the confirmed GitHub payload.
 
 A minimal synthetic final result, not a required skill template:
 
@@ -88,13 +88,14 @@ A minimal synthetic final result, not a required skill template:
     }
   ],
   "verdict": "REQUEST_CHANGES",
-  "rationale": "One introduced blocking defect in cancellation."
+  "rationale": "One introduced blocking defect in cancellation.",
+  "humanReviewRequest": null
 }
 ```
 
 The checker validates format, not this fictional diff anchor, and grants no permission to publish.
 
-Invalid final output fails the run instead of creating a draft or revision proposal. See the [review skill guide](docs/review-output.md) for finding examples, supported customization and the local `npm run check:review-output < candidate.json` checker, which needs no model or running app.
+Core-invalid final output fails the run instead of creating a draft or revision proposal. Missing or malformed human-request extensions are advisory unavailable detection, not failed reviews. See the [review skill guide](docs/review-output.md) for finding examples, supported customization and the local `npm run check:review-output < candidate.json` checker, which needs no model or running app.
 
 ## Documentation
 

@@ -108,7 +108,7 @@ interface MockOptions {
   oauthScopes?: OAuthScopeCase;
   oauthReturn?: "valid" | "stale";
   exclusions?: "none";
-  autoSubmission?: "human" | "check-needed" | "off-hold";
+  autoSubmission?: "human" | "unavailable" | "off-hold";
   editIntent?: "locked" | "fail" | "slow" | "stale";
 }
 
@@ -457,8 +457,8 @@ export class MockBackend {
     if (options.autoSubmission) {
       const pr = this.prs.find((item) => item.id === "pr-482")!;
       pr.autoSubmission = fixtures.autoSubmissionState(
-        options.autoSubmission === "check-needed"
-          ? "check_needed"
+        options.autoSubmission === "unavailable"
+          ? "unavailable"
           : options.autoSubmission === "off-hold"
             ? "off"
             : "human_review_requested",
@@ -2327,21 +2327,7 @@ export class MockBackend {
     return this.detail(id);
   }
 
-  checkAutoSubmission(id: string) {
-    this.autoCheckCalls += 1;
-    const pr = this.pr(id);
-    pr.autoSubmission ??= fixtures.autoSubmissionState("check_needed", pr.headSha);
-    const state = pr.autoSubmission;
-    const incomplete = this.options.autoSubmission === "check-needed";
-    const active = state.evidence.some((item) => !item.acknowledgment);
-    state.check = {
-      ...fixtures.autoSubmissionState(incomplete ? "check_needed" : "held", pr.headSha).check!,
-      status: incomplete ? "check_needed" : active ? "human_review_requested" : "clear",
-      checkedAt: this.now(),
-      message: "SYNTHETIC: explicit inert discussion check only.",
-    };
-    state.status = incomplete ? "check_needed" : active ? "human_review_requested" : "held";
-    state.version += 1;
+  reconcileAutoSubmission(id: string) {
     this.emit(id);
     return this.detail(id);
   }
@@ -2376,14 +2362,11 @@ export class MockBackend {
       );
     if (
       body.confirmation !== autoSubmissionReenableConfirmation ||
-      state.evidence.some((item) => !item.acknowledgment) ||
-      state.check?.status !== "clear" ||
-      !state.check.coverage.complete ||
-      state.check.headSha !== pr.headSha
+      state.evidence.some((item) => !item.acknowledgment)
     )
       throw new MockError(
         409,
-        "SYNTHETIC: a fresh clear check and all acknowledgments are required",
+        "SYNTHETIC: all exact evidence acknowledgments are required",
         "auto_submission_held",
       );
     state.reenableRequired = false;
@@ -3399,7 +3382,9 @@ export class MockBackend {
       if (action === "draft" && sub === "edit-intent" && method === "POST")
         return this.draftEditIntent(id, b);
       if (action === "auto-submission" && method === "POST") {
-        if (sub === "check") return this.checkAutoSubmission(id);
+        if (sub === "check")
+          throw new MockError(404, "Independent classifier checks are retired", "not_found");
+        if (sub === "reconcile") return this.reconcileAutoSubmission(id);
         if (sub === "acknowledge") return this.acknowledgeHumanReview(id, b);
         if (sub === "re-enable") return this.reenableAutoSubmission(id, b);
       }

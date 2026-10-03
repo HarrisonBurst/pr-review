@@ -32,7 +32,7 @@ test("inert end-to-end automatic draft baseline never publishes without separate
     assert.equal(f.service.getState().settings.autoSubmission?.enabled, false);
   }));
 
-test("a check-needed publication hold preserves automatic drafts and exact confirmed-submission settlement", () =>
+test("a genuine human publication hold preserves automatic drafts and exact confirmed-submission settlement", () =>
   fixture(async (f) => {
     f.reviewer.result.verdict = "APPROVE";
     await f.service.manualReview(PR);
@@ -52,14 +52,15 @@ test("a check-needed publication hold preserves automatic drafts and exact confi
     );
     assert.equal(f.service.getDetail(PR).pr.status, "submitted");
     f.save(["APPROVE"]);
-    f.classifier.fail = true;
-    await f.service.checkAutoSubmission(PR);
+    f.github.sources = [fixtureSource()];
+    f.reviewer.decisions.set("synthetic-comment", "requested");
+    await f.manualReview();
     f.github.current.pr.headSha = "synthetic-new-head-after-approval";
     await f.automaticReview();
     const automatic = f.service.getDetail(PR);
     assert.equal(automatic.runs[0]?.trigger, "new_commits");
     assert.equal(automatic.runs[0]?.status, "completed");
-    assert.equal(automatic.pr.autoSubmission?.check?.status, "check_needed");
+    assert.equal(automatic.pr.autoSubmission?.detection?.status, "found");
     assert.equal(automatic.pr.status, "ready");
     assert.equal(
       automatic.drafts.find((draft) => draft.id === edited.id)?.body,
@@ -236,7 +237,7 @@ test("manual/local/old drafts never gain authority when consent is saved", () =>
     await f.service.processJob(f.service.db.listJobs("queued")[0]!);
     const manual = f.service.getDetail(PR).draft!;
     f.save();
-    await f.service.checkAutoSubmission(PR);
+    await f.service.reconcileAutoSubmission(PR);
     assert.equal(f.github.writes.length, 0);
     assert.equal(
       f.service.getDetail(PR).pr.autoSubmission?.status,
@@ -256,7 +257,7 @@ test("pre-consent automatic drafts and accepted AI revisions stay manual without
     const draft = initial.draft!;
     const result = structuredClone(initial.runs[0]!.result);
     f.save();
-    await f.service.checkAutoSubmission(PR);
+    await f.service.reconcileAutoSubmission(PR);
     assert.equal(
       f.service.getDetail(PR).pr.autoSubmission?.status,
       "manual_only",
@@ -283,7 +284,7 @@ test("pre-consent automatic drafts and accepted AI revisions stay manual without
       detail.runs.find((run) => run.id === draft.runId)?.result,
       result,
     );
-    await f.service.checkAutoSubmission(PR);
+    await f.service.reconcileAutoSubmission(PR);
     assert.equal(f.github.writes.length, 0);
   }));
 
@@ -347,7 +348,7 @@ test("uncertain automatic dispatch cannot acknowledge editable authority until e
         f.service.editIntent(PR, { draftId: draft.id, version: draft.version }),
       /in flight or uncertain/,
     );
-    await f.service.checkAutoSubmission(PR);
+    await f.service.reconcileAutoSubmission(PR);
     assert.equal(f.service.getDetail(PR).submissions[0]?.status, "submitted");
     f.service.editIntent(PR, { draftId: draft.id, version: draft.version });
     assert.equal(
@@ -373,13 +374,11 @@ test("revocation or unchanged Save during awaited work invalidates captured futu
     assert.equal(f.service.getState().settings.autoSubmission?.enabled, false);
   }));
 
-test("human requests arriving mid-review override consent but preserve private drafting", () =>
+test("same-pass human requests override consent but preserve private drafting", () =>
   fixture(async (f) => {
     f.save();
-    f.reviewer.beforeResult = async () => {
-      f.github.sources = [fixtureSource()];
-      f.classifier.decisions.set("synthetic-comment", "requested");
-    };
+    f.github.sources = [fixtureSource()];
+    f.reviewer.decisions.set("synthetic-comment", "requested");
     await f.automaticReview();
     const detail = f.service.getDetail(PR);
     assert.equal(f.github.writes.length, 0);
@@ -398,12 +397,12 @@ test("source holds survive deletion, new head and restart; acknowledgment and fu
   fixture(async (f) => {
     f.save();
     f.github.sources = [fixtureSource()];
-    f.classifier.decisions.set("synthetic-comment", "requested");
-    await f.service.checkAutoSubmission(PR);
+    f.reviewer.decisions.set("synthetic-comment", "requested");
     await f.automaticReview();
     f.github.sources = [];
     f.github.current.pr.headSha = "synthetic-next-head";
-    await f.service.checkAutoSubmission(PR);
+    f.service.updateSettings({ automation: automationOff });
+    await f.service.sync();
     await f.restart();
     let state = f.service.getDetail(PR).pr.autoSubmission!;
     assert.equal(state.evidence.length, 1);
@@ -436,8 +435,8 @@ test("source holds survive deletion, new head and restart; acknowledgment and fu
 test("identical acknowledged source versions do not retrigger across heads; changed contextual versions do", () =>
   fixture(async (f) => {
     f.github.sources = [fixtureSource()];
-    f.classifier.decisions.set("synthetic-comment", "requested");
-    await f.service.checkAutoSubmission(PR);
+    f.reviewer.decisions.set("synthetic-comment", "requested");
+    await f.manualReview();
     let state = f.service.getDetail(PR).pr.autoSubmission!;
     const evidence = state.evidence[0]!;
     assert.throws(
@@ -462,14 +461,14 @@ test("identical acknowledged source versions do not retrigger across heads; chan
       confirmation: autoSubmissionReenableConfirmation,
     });
     f.github.current.pr.headSha = "synthetic-new-head";
-    await f.service.checkAutoSubmission(PR);
+    await f.manualReview();
     assert.equal(f.service.getDetail(PR).pr.autoSubmission?.evidence.length, 1);
     assert.equal(
       f.service.getDetail(PR).pr.autoSubmission?.reenableRequired,
       false,
     );
     f.github.current.pr.body = "SYNTHETIC changed contextual request";
-    await f.service.checkAutoSubmission(PR);
+    await f.manualReview();
     assert.equal(f.service.getDetail(PR).pr.autoSubmission?.evidence.length, 2);
     assert.equal(
       f.service.getDetail(PR).pr.autoSubmission?.reenableRequired,
@@ -477,28 +476,33 @@ test("identical acknowledged source versions do not retrigger across heads; chan
     );
   }));
 
-for (const failure of ["incomplete", "unknown", "uncertain", "error"])
-  test(`${failure} classification/coverage pauses honestly without fabricating human evidence`, () =>
+for (const failure of [
+  "incomplete",
+  "unknown",
+  "uncertain",
+  "error",
+  "missing",
+  "malformed",
+  "null",
+] as const)
+  test(`${failure} detection is honestly unavailable and nonblocking without fabricated evidence or extra model calls`, () =>
     fixture(async (f) => {
+      f.save();
       f.github.sources = [fixtureSource()];
       if (failure === "incomplete") f.github.complete = false;
       if (failure === "unknown") f.github.sources[0]!.authorType = "unknown";
       if (failure === "uncertain")
-        f.classifier.decisions.set("synthetic-comment", "uncertain");
-      if (failure === "error") f.classifier.fail = true;
-      await f.service.checkAutoSubmission(PR);
-      assert.equal(
-        f.service.getDetail(PR).pr.autoSubmission?.status,
-        "check_needed",
-      );
-      assert.equal(
-        f.service.getDetail(PR).pr.autoSubmission?.evidence.length,
-        0,
-      );
-      assert.equal(
-        f.service.getDetail(PR).pr.autoSubmission?.reenableRequired,
-        true,
-      );
+        f.reviewer.decisions.set("synthetic-comment", "uncertain");
+      if (failure === "error") f.reviewer.fail = true;
+      if (["missing", "malformed", "null"].includes(failure))
+        f.reviewer.extensionMode = failure as "missing" | "malformed" | "null";
+      await f.automaticReview();
+      const state = f.service.getDetail(PR).pr.autoSubmission!;
+      assert.equal(state.detection?.status, "unavailable");
+      assert.equal(state.evidence.length, 0);
+      assert.equal(state.reenableRequired, false);
+      assert.equal(f.github.writes.length, 1);
+      assert.equal(f.reviewer.calls, 1);
     }));
 
 test("confirmed manual publication suppresses later automatic publication on that head", () =>
@@ -528,10 +532,10 @@ test("uncertain automatic writes persist, prohibit competing writes and reconcil
     await f.restart();
     f.github.failWrite = false;
     f.github.inventory.reviews[0]!.payload.event = "APPROVE";
-    await f.service.checkAutoSubmission(PR);
+    await f.service.reconcileAutoSubmission(PR);
     assert.equal(f.service.getDetail(PR).submissions[0]?.status, "uncertain");
     f.github.inventory.reviews[0]!.payload.event = "COMMENT";
-    await f.service.checkAutoSubmission(PR);
+    await f.service.reconcileAutoSubmission(PR);
     assert.equal(f.service.getDetail(PR).submissions[0]?.status, "submitted");
     await f.automaticReview();
     assert.equal(f.github.writes.length, 1);
@@ -571,7 +575,7 @@ test("same-timestamp recovery evidence cannot prove publication followed the dur
     await f.automaticReview();
     const attempt = f.service.getDetail(PR).submissions[0]!;
     f.github.inventory.reviews[0]!.submittedAt = attempt.createdAt;
-    await f.service.checkAutoSubmission(PR);
+    await f.service.reconcileAutoSubmission(PR);
     assert.equal(f.service.getDetail(PR).submissions[0]?.status, "uncertain");
     assert.equal(f.github.writes.length, 1);
   }));
@@ -626,7 +630,7 @@ test("final awaited head work rechecks unsaved edit intent before creating an at
     let reads = 0;
     f.github.beforeInventory = async () => {
       f.github.beforeHead = async () => {
-        if (++reads === 2) {
+        if (++reads === 1) {
           const draft = f.service.getDetail(PR).draft!;
           f.service.editIntent(PR, {
             draftId: draft.id,
@@ -703,13 +707,13 @@ test("known bots and exact confirmed app automation do not manufacture requests;
       provenance: "bot" as const,
     };
     f.github.sources = [own, bot];
-    f.classifier.decisions.set(own.id, "requested");
-    f.classifier.decisions.set(bot.id, "requested");
-    await f.service.checkAutoSubmission(PR);
+    f.reviewer.decisions.set(own.id, "requested");
+    f.reviewer.decisions.set(bot.id, "requested");
+    await f.manualReview();
     assert.equal(f.service.getDetail(PR).pr.autoSubmission?.evidence.length, 0);
     f.github.sources = [{ ...own, id: "unverified-same-login" }];
-    f.classifier.decisions.set("unverified-same-login", "requested");
-    await f.service.checkAutoSubmission(PR);
+    f.reviewer.decisions.set("unverified-same-login", "requested");
+    await f.manualReview();
     assert.equal(f.service.getDetail(PR).pr.autoSubmission?.evidence.length, 1);
   }));
 
@@ -744,8 +748,8 @@ test("only complete exact confirmed inline identities count as app automation, n
       threadId: "synthetic-thread",
     };
     f.github.sources = [own];
-    f.classifier.decisions.set(own.id, "requested");
-    await f.service.checkAutoSubmission(PR);
+    f.reviewer.decisions.set(own.id, "requested");
+    await f.manualReview();
     assert.equal(f.service.getDetail(PR).pr.autoSubmission?.evidence.length, 0);
     await f.restart();
     f.github.current.pr.headSha = "synthetic-next-inline-head";
@@ -754,16 +758,16 @@ test("only complete exact confirmed inline identities count as app automation, n
     assert.equal(f.github.writes.length, 2);
     assert.equal(f.service.getDetail(PR).pr.autoSubmission?.evidence.length, 0);
     f.github.sources = [{ ...own, id: "synthetic-human-copy" }];
-    f.classifier.decisions.set("synthetic-human-copy", "requested");
-    await f.service.checkAutoSubmission(PR);
+    f.reviewer.decisions.set("synthetic-human-copy", "requested");
+    await f.manualReview();
     assert.equal(f.service.getDetail(PR).pr.autoSubmission?.evidence.length, 1);
   }));
 
 test("source edits, resolved/outdated flags never clear prior source-backed holds", () =>
   fixture(async (f) => {
     f.github.sources = [fixtureSource()];
-    f.classifier.decisions.set("synthetic-comment", "requested");
-    await f.service.checkAutoSubmission(PR);
+    f.reviewer.decisions.set("synthetic-comment", "requested");
+    await f.manualReview();
     const original = f.service.getDetail(PR).pr.autoSubmission!.evidence[0]!;
     f.github.sources = [
       {
@@ -772,29 +776,42 @@ test("source edits, resolved/outdated flags never clear prior source-backed hold
         outdated: true,
       },
     ];
-    f.classifier.decisions.set("synthetic-comment", "not_requested");
-    await f.service.checkAutoSubmission(PR);
+    f.reviewer.decisions.set("synthetic-comment", "not_requested");
+    await f.manualReview();
     const state = f.service.getDetail(PR).pr.autoSubmission!;
     assert.equal(state.status, "human_review_requested");
     assert.deepEqual(state.evidence[0], original);
   }));
 
-test("exact classifier input revisions cache, but changed text or context must classify again", () =>
+test("ordinary refresh reports unseen contextual versions as unavailable without another model pass", () =>
   fixture(async (f) => {
+    f.service.updateSettings({
+      automation: { pollCommits: true, reviewNewCommits: true },
+    });
     f.github.sources = [fixtureSource("SYNTHETIC unrelated discussion")];
-    await f.service.checkAutoSubmission(PR);
-    const initial = f.classifier.calls;
-    await f.service.checkAutoSubmission(PR);
-    assert.equal(f.classifier.calls, initial);
+    await f.manualReview();
+    const initial = f.reviewer.calls;
+    const observation = structuredClone(
+      f.service.getDetail(PR).runs[0]!.result,
+    );
+    await f.service.checkFreshness(PR);
+    assert.equal(
+      f.service.getDetail(PR).pr.autoSubmission?.detection?.status,
+      "not_found",
+    );
     f.github.current.pr.title = "SYNTHETIC changed contextual title";
-    await f.service.checkAutoSubmission(PR);
-    assert.equal(f.classifier.calls, initial + 1);
+    await f.service.checkFreshness(PR);
+    assert.equal(
+      f.service.getDetail(PR).pr.autoSubmission?.detection?.status,
+      "unavailable",
+    );
     f.github.sources = [fixtureSource("SYNTHETIC changed text")];
-    await f.service.checkAutoSubmission(PR);
-    assert.equal(f.classifier.calls, initial + 2);
+    await f.service.checkFreshness(PR);
+    assert.equal(f.reviewer.calls, initial);
+    assert.deepEqual(f.service.getDetail(PR).runs[0]!.result, observation);
   }));
 
-test("discussion-only checks neither queue reviews nor consume the historical new-head baseline", () =>
+test("submission-only reconciliation neither queues reviews nor consumes the historical new-head baseline", () =>
   fixture(async (f) => {
     f.service.updateSettings({
       automation: { pollCommits: true, reviewNewCommits: true },
@@ -802,7 +819,7 @@ test("discussion-only checks neither queue reviews nor consume the historical ne
     await f.service.sync();
     const oldHead = f.service.db.getAutomationState(PR).commitHead;
     f.github.current.pr.headSha = "synthetic-arrived-during-check";
-    await f.service.checkAutoSubmission(PR);
+    await f.service.reconcileAutoSubmission(PR);
     assert.equal(f.service.db.listJobs().length, 0);
     assert.equal(f.service.db.getAutomationState(PR).commitHead, oldHead);
     await f.service.sync();
@@ -812,6 +829,240 @@ test("discussion-only checks neither queue reviews nor consume the historical ne
       "synthetic-arrived-during-check",
     );
   }));
+
+test("rollout preserves consent, edited drafts, evidence acknowledgments and history while fencing old queued and held backlog", async (t) => {
+  const f = await publicationFixture();
+  t.mock.method(Object.getPrototypeOf(f.service.queue), "schedule", () => {});
+  try {
+    f.save();
+    f.reviewer.beforeResult = async () => {
+      const state = f.service.db.getPublicationState(PR);
+      state.reenableRequired = true;
+      state.check = {
+        status: "check_needed",
+        headSha: f.github.current.pr.headSha,
+        revision: null,
+        checkedAt: "2026-01-01T00:00:00Z",
+        coverage: {
+          complete: false,
+          comments: { pages: 0, complete: false, error: null },
+          reviews: { pages: 0, complete: false, error: null },
+          threads: { pages: 0, complete: false, error: null },
+        },
+        message: "SYNTHETIC unsupported classifier",
+        detector: null,
+      };
+      f.service.db.savePublicationState(PR, state);
+    };
+    await f.automaticReview();
+    f.reviewer.beforeResult = undefined;
+    f.service.updateSettings({ automation: automationOff });
+    const held = f.service.getDetail(PR).draft!;
+    f.service.editIntent(PR, { draftId: held.id, version: held.version });
+    f.service.updateDraft(PR, {
+      draftId: held.id,
+      version: held.version,
+      body: "SYNTHETIC preserved edit",
+      findings: held.findings,
+      verdict: held.verdict,
+    });
+    const before = f.service.getDetail(PR);
+    const settings = structuredClone(f.service.getState().settings);
+    f.service.db.sqlite.exec(
+      "ALTER TABLE meta DROP COLUMN same_pass_submission",
+    );
+    await f.restart();
+    const after = f.service.getDetail(PR);
+    assert.deepEqual(f.service.getState().settings, settings);
+    assert.deepEqual(after.runs, before.runs);
+    assert.deepEqual(after.drafts, before.drafts);
+    assert.deepEqual(
+      after.pr.autoSubmission?.check,
+      before.pr.autoSubmission?.check,
+    );
+    assert.equal(after.pr.autoSubmission?.reenableRequired, false);
+    assert.equal(
+      after.pr.autoSubmission?.generation,
+      before.pr.autoSubmission!.generation + 1,
+    );
+    assert.equal(f.github.writes.length, 0);
+    await f.service.reconcileAutoSubmission(PR);
+    assert.equal(f.github.writes.length, 0);
+    await f.automaticReview();
+    assert.equal(f.github.writes.length, 1);
+  } finally {
+    await f.close();
+  }
+});
+
+for (const kind of ["genuine", "acknowledged", "provenance", "queued"] as const)
+  test(`rollout retains ${kind} evidence/mechanical holds or immutable queued captures without backlog publication`, async (t) => {
+    const f = await publicationFixture();
+    t.mock.method(Object.getPrototypeOf(f.service.queue), "schedule", () => {});
+    try {
+      f.save();
+      if (kind === "queued") {
+        f.service.updateSettings({
+          automation: { pollCommits: true, reviewNewCommits: true },
+        });
+        await f.service.sync();
+        f.service.db.setCommitHead(PR, "synthetic-old-head");
+        await f.service.sync();
+      } else {
+        f.github.sources = [fixtureSource()];
+        f.reviewer.decisions.set("synthetic-comment", "requested");
+        await f.automaticReview();
+      }
+      const state = f.service.db.getPublicationState(PR);
+      if (kind === "acknowledged") {
+        const evidence = state.evidence[0]!;
+        f.service.acknowledgeHumanReview(PR, {
+          expectedVersion: state.version,
+          evidenceId: evidence.id,
+          source: evidence.source,
+          action: "resolve",
+        });
+      }
+      if (kind === "provenance") {
+        state.evidence = [];
+        state.check = {
+          status: "check_needed",
+          headSha: f.github.current.pr.headSha,
+          revision: null,
+          checkedAt: "2026-01-01T00:00:00Z",
+          coverage:
+            f.service.getDetail(PR).pr.autoSubmission!.detection!.coverage,
+          message:
+            "Confirmed write has unverified automated inline provenance; check needed",
+          detector: null,
+        };
+        f.service.db.savePublicationState(PR, state);
+      }
+      f.service.updateSettings({ automation: automationOff });
+      const before = f.service.getDetail(PR);
+      const settings = structuredClone(f.service.getState().settings);
+      f.service.db.sqlite.exec(
+        "ALTER TABLE meta DROP COLUMN same_pass_submission",
+      );
+      await f.restart();
+      const after = f.service.getDetail(PR);
+      assert.deepEqual(f.service.getState().settings, settings);
+      assert.deepEqual(after.runs, before.runs);
+      assert.deepEqual(after.drafts, before.drafts);
+      assert.deepEqual(
+        after.pr.autoSubmission?.evidence,
+        before.pr.autoSubmission?.evidence,
+      );
+      if (kind === "provenance")
+        assert.equal(after.pr.autoSubmission?.failure?.step, "provenance");
+      if (kind === "genuine" || kind === "acknowledged")
+        assert.equal(after.pr.autoSubmission?.reenableRequired, true);
+      if (kind === "queued") {
+        const job = f.service.db.listJobs("queued")[0]!;
+        await f.service.processJob(job);
+        assert.equal(
+          f.service.getDetail(PR).pr.autoSubmission?.status,
+          "manual_only",
+        );
+      }
+      assert.equal(f.github.writes.length, 0);
+    } finally {
+      await f.close();
+    }
+  });
+
+for (const race of ["head", "closed", "draft", "version", "writer"] as const)
+  test(`late ${race} change blocks publication before a durable attempt`, () =>
+    fixture(async (f) => {
+      f.save();
+      f.github.beforeInventory = async () => {
+        if (race === "head")
+          f.github.current.pr.headSha = "synthetic-late-head";
+        if (race === "closed") f.github.current.pr.state = "CLOSED";
+        if (race === "draft") f.service.createManualDraft(PR);
+        if (race === "version") {
+          const draft = f.service.getDetail(PR).draft!;
+          f.service.updateDraft(PR, {
+            draftId: draft.id,
+            version: draft.version,
+            body: "SYNTHETIC late edit",
+            findings: draft.findings,
+            verdict: draft.verdict,
+          });
+        }
+        if (race === "writer")
+          f.github.inventory.writer = "other-synthetic-writer";
+      };
+      await f.automaticReview();
+      assert.equal(f.github.writes.length, 0);
+      assert.equal(f.service.getDetail(PR).submissions.length, 0);
+      if (race === "writer") {
+        assert.equal(
+          f.service.getDetail(PR).pr.autoSubmission?.status,
+          "failed",
+        );
+        assert.match(
+          f.service.getDetail(PR).pr.autoSubmission!.message,
+          /writer/,
+        );
+        assert.equal(
+          f.service.getDetail(PR).pr.autoSubmission?.reenableRequired,
+          false,
+        );
+      }
+    }));
+
+for (const change of ["writer", "consent", "edit"] as const)
+  test(`final awaited writer inventory rechecks ${change} before recording an attempt`, () =>
+    fixture(async (f) => {
+      f.save();
+      let inventories = 0;
+      f.github.beforeInventory = async () => {
+        if (++inventories !== 2) return;
+        if (change === "writer")
+          f.github.inventory.writer = "changed-synthetic-writer";
+        if (change === "consent") f.save([], false);
+        if (change === "edit") {
+          const draft = f.service.getDetail(PR).draft!;
+          f.service.editIntent(PR, {
+            draftId: draft.id,
+            version: draft.version,
+          });
+        }
+      };
+      await f.automaticReview();
+      assert.equal(inventories, 2);
+      assert.equal(f.github.writes.length, 0);
+      assert.equal(f.service.getDetail(PR).submissions.length, 0);
+    }));
+
+for (const extension of ["normal", "null"] as const)
+  test(`${extension} observations never clear a genuine hold, even with incomplete coverage`, () =>
+    fixture(async (f) => {
+      f.github.sources = [fixtureSource()];
+      f.github.complete = false;
+      f.reviewer.decisions.set("synthetic-comment", "requested");
+      await f.manualReview();
+      const evidence = structuredClone(
+        f.service.getDetail(PR).pr.autoSubmission!.evidence,
+      );
+      assert.equal(evidence.length, 1);
+      f.github.sources = [];
+      f.reviewer.extensionMode = extension;
+      await f.manualReview();
+      assert.deepEqual(
+        f.service.getDetail(PR).pr.autoSubmission?.evidence,
+        evidence,
+      );
+      assert.equal(
+        f.service.getDetail(PR).pr.autoSubmission?.status,
+        "human_review_requested",
+      );
+      assert.equal(
+        f.service.getDetail(PR).pr.autoSubmission?.detection?.status,
+        "unavailable",
+      );
+    }));
 
 test("restart-stranded automatic attempts become uncertain and never receive a blind retry", () =>
   fixture(async (f) => {
@@ -826,7 +1077,7 @@ test("restart-stranded automatic attempts become uncertain and never receive a b
     });
     await f.restart();
     assert.equal(f.service.getDetail(PR).submissions[0]?.status, "uncertain");
-    await f.service.checkAutoSubmission(PR);
+    await f.service.reconcileAutoSubmission(PR);
     assert.equal(f.service.getDetail(PR).submissions[0]?.status, "submitted");
     assert.equal(f.github.writes.length, 1);
   }));
