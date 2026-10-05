@@ -52,6 +52,8 @@ import { setNavigationGuard } from "../lib/router";
 
 const UNSAVED = "You have unsaved draft edits. Leave and discard them?";
 const SWITCH = "You have unsaved draft edits. Switch drafts and discard them?";
+const VERSION_CHANGED =
+  "The saved version changed. Use Load latest, discard my edits to review it before editing again.";
 
 const isDirty = (edit: DraftUpdate | null, saved: ReviewDraft | null) =>
   !!(edit && saved && edit.draftId === saved.id && !sameDraft(edit, toUpdate(saved)));
@@ -229,19 +231,33 @@ export function PrView({ id, listed }: { id: string; listed: PullRequest | undef
     }
   };
 
+  const requiresEditIntent = (draft: ReviewDraft, current = detailRef.current) =>
+    current?.pr.autoSubmission?.status === "eligible" &&
+    current.pr.autoSubmission.draftId === draft.id;
+  const publicationInFlight = (draft: ReviewDraft, current = detailRef.current) =>
+    current?.submissions.some(
+      (item) =>
+        item.authority?.kind === "automatic" &&
+        item.authority.draftId === draft.id &&
+        item.authority.draftVersion === draft.version &&
+        (item.status === "submitting" || item.status === "uncertain"),
+    );
+
   const beginEditing = async (draft: ReviewDraft): Promise<boolean> => {
     const known = detailRef.current?.drafts.find((item) => item.id === draft.id);
     if (!known || known.version !== draft.version) return false;
     if (draft.id === selectedRef.current && editRef.current?.version !== draft.version) {
       setIntentError({
         draftId: draft.id,
-        message:
-          "The saved version changed. Use Load latest, discard my edits to review it before editing again.",
+        message: VERSION_CHANGED,
       });
       return false;
     }
     if (intentInFlight.current) return false;
-    if (known.autoSubmission?.manualHold) {
+    if (
+      !publicationInFlight(known) &&
+      (known.autoSubmission?.manualHold || !requiresEditIntent(known))
+    ) {
       setIntentError(null);
       return true;
     }
@@ -260,7 +276,8 @@ export function PrView({ id, listed }: { id: string; listed: PullRequest | undef
         next.pr.id !== id ||
         current?.version !== draft.version ||
         observed?.version !== draft.version ||
-        !observed.autoSubmission?.manualHold
+        publicationInFlight(observed, next) ||
+        (!observed.autoSubmission?.manualHold && requiresEditIntent(observed, next))
       ) {
         setIntentError({
           draftId: draft.id,
@@ -270,8 +287,7 @@ export function PrView({ id, listed }: { id: string; listed: PullRequest | undef
         return false;
       }
       adopt(next);
-      return !!detailRef.current?.drafts.find((item) => item.id === draft.id)?.autoSubmission
-        ?.manualHold;
+      return !!observed.autoSubmission?.manualHold || !requiresEditIntent(observed, next);
     } catch (e) {
       if (!mounted.current || epoch !== intentEpoch.current) return false;
       setIntentError({
@@ -290,12 +306,21 @@ export function PrView({ id, listed }: { id: string; listed: PullRequest | undef
 
   const editingFor = (draft: ReviewDraft): DraftEditing => ({
     allowed:
-      !!draft.autoSubmission?.manualHold &&
+      (!!draft.autoSubmission?.manualHold || !requiresEditIntent(draft)) &&
+      !publicationInFlight(draft) &&
       !intentPending &&
       intentError?.draftId !== draft.id &&
       (draft.id !== selectedId || edit?.version === draft.version),
+    recorded: !!draft.autoSubmission?.manualHold,
     pending: intentPending !== null,
-    error: intentError?.draftId === draft.id ? intentError.message : null,
+    error:
+      intentError?.draftId === draft.id
+        ? intentError.message
+        : publicationInFlight(draft)
+          ? "Draft version changed or automatic publication is in flight or uncertain; reload or reconcile before editing. Edit intent cannot cancel a dispatched write"
+          : draft.id === selectedId && edit?.version !== draft.version
+            ? VERSION_CHANGED
+            : null,
     begin: () => void beginEditing(draft),
   });
   const editable = saved ? editingFor(saved).allowed : false;

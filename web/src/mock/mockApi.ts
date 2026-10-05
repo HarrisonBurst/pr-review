@@ -465,7 +465,16 @@ export class MockBackend {
         pr.headSha,
       );
     }
-    if (options.editIntent) delete this.drafts["pr-482"]![0]!.autoSubmission;
+    if (options.editIntent) {
+      const pr = this.prs.find((item) => item.id === "pr-482")!;
+      delete this.drafts["pr-482"]![0]!.autoSubmission;
+      pr.autoSubmission ??= {
+        ...fixtures.autoSubmissionState("unavailable", pr.headSha),
+        status: "eligible",
+        reenableRequired: false,
+        message: "SYNTHETIC: eligible draft edit gate fixture",
+      };
+    }
     const seed =
       harnessSeed[options.harness === "unavailable" ? "saved" : (options.harness ?? "saved")];
     this.harness = structuredClone(seed.settings);
@@ -2321,9 +2330,12 @@ export class MockBackend {
         "SYNTHETIC: publication is in flight or uncertain; intent cannot cancel it",
         "draft_conflict",
       );
-    draft.autoSubmission ??= { provenance: null, manualHold: null };
-    draft.autoSubmission.manualHold ??= { reason: "edit_intent", at: this.now() };
-    this.emit(id);
+    const state = this.pr(id).autoSubmission;
+    if (state?.status === "eligible" && state.draftId === draft.id) {
+      draft.autoSubmission ??= { provenance: null, manualHold: null };
+      draft.autoSubmission.manualHold ??= { reason: "edit_intent", at: this.now() };
+      this.emit(id);
+    }
     return this.detail(id);
   }
 

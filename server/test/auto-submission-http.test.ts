@@ -36,10 +36,8 @@ test("a confirmed automatically submitted draft can be edited, saved, reloaded a
     });
     assert.equal(intent.status, 200);
     const observed = (await intent.json()) as PullRequestDetail;
-    assert.equal(
-      observed.draft?.autoSubmission?.manualHold?.reason,
-      "edit_intent",
-    );
+    assert.equal(observed.pr.autoSubmission?.status, "submitted");
+    assert.equal(observed.draft?.autoSubmission?.manualHold, null);
     assert.equal(observed.pr.status, "submitted");
     assert.deepEqual(observed.submissions[0], submission);
     const saved = await request(
@@ -57,6 +55,10 @@ test("a confirmed automatically submitted draft can be edited, saved, reloaded a
     const reloaded = (await (await fetch(base)).json()) as PullRequestDetail;
     assert.equal(reloaded.draft?.version, 2);
     assert.equal(
+      reloaded.draft?.autoSubmission?.manualHold?.reason,
+      "saved_edit",
+    );
+    assert.equal(
       reloaded.draft?.body,
       "SYNTHETIC edit after confirmed publication",
     );
@@ -69,6 +71,54 @@ test("a confirmed automatically submitted draft can be edited, saved, reloaded a
     });
     assert.equal(preview.status, 200);
     assert.equal((await preview.json()).payload.body, reloaded.draft?.body);
+    assert.equal(f.github.writes.length, 1);
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+    await f.close();
+  }
+});
+
+test("direct HTTP edit intent refuses dispatched and uncertain exact versions even after consent is disabled", async () => {
+  const f = await publicationFixture();
+  const server = createHttpServer(f.service, f.config);
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/prs/${encodeURIComponent(PR)}/draft/edit-intent`;
+  const request = (version: number) =>
+    fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        draftId: f.service.getDetail(PR).draft!.id,
+        version,
+      }),
+    });
+  const refusal = async (version: number) => {
+    const response = await request(version);
+    assert.equal(response.status, 409);
+    assert.deepEqual(await response.json(), {
+      code: "draft_conflict",
+      error:
+        "Draft version changed or automatic publication is in flight or uncertain; reload or reconcile before editing. Edit intent cannot cancel a dispatched write",
+    });
+    assert.equal(
+      f.service.getDetail(PR).draft?.autoSubmission?.manualHold,
+      null,
+    );
+  };
+  try {
+    f.save();
+    f.github.beforeWrite = async () => {
+      f.save([], false);
+      await refusal(1);
+    };
+    f.github.failWrite = true;
+    await f.automaticReview();
+    assert.equal(f.service.getState().settings.autoSubmission?.enabled, false);
+    assert.equal(f.service.getDetail(PR).submissions[0]?.status, "uncertain");
+    await refusal(1);
+    await refusal(99);
     assert.equal(f.github.writes.length, 1);
   } finally {
     await new Promise<void>((resolve, reject) =>

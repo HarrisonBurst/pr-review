@@ -171,10 +171,10 @@ it("cancellation updates preserve unsaved draft edits and manual preview stays e
   const { backend, user } = mount("running");
   const gate = backend.hold("review-cancel");
   await user.click(await screen.findByRole("link", { name: /Apply volume discounts on invoices/ }));
-  const editing = await screen.findByRole("button", { name: "Begin editing" });
-  await user.click(editing);
   const body = await screen.findByLabelText(/GitHub review body/);
-  await waitFor(() => expect(body).not.toBeDisabled());
+  expect(screen.queryByRole("button", { name: "Begin editing" })).toBeNull();
+  expect(body).not.toHaveAttribute("readonly");
+  expect(backend.editIntentBodies).toEqual([]);
   await user.clear(body);
   await user.type(body, "SYNTHETIC unsaved cancellation edit");
   await user.click(screen.getByRole("button", { name: /Cancel review #482/ }));

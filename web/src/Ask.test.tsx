@@ -216,8 +216,9 @@ describe("manual comments", () => {
     const body = await screen.findByLabelText(/GitHub review body/);
     const local = backend.detail("pr-490").draft!;
     expect(local.runId).toBeNull();
-    await user.click(screen.getByRole("button", { name: "Begin editing" }));
-    await waitFor(() => expect(body).not.toHaveAttribute("readonly"));
+    expect(screen.queryByRole("button", { name: "Begin editing" })).toBeNull();
+    expect(body).not.toHaveAttribute("readonly");
+    expect(backend.editIntentBodies).toEqual([]);
     await user.type(body, "Local notes.");
     backend.options.remoteHead = { "pr-490": newHead };
     await user.click(screen.getByRole("button", { name: "Review now" }));
@@ -274,8 +275,9 @@ describe("manual comments", () => {
     window.location.hash = "#/pr/pr-475";
     const user = mount();
     const body = await screen.findByLabelText(/GitHub review body/);
-    await user.click(screen.getByRole("button", { name: "Begin editing" }));
-    await waitFor(() => expect(body).not.toHaveAttribute("readonly"));
+    expect(screen.queryByRole("button", { name: "Begin editing" })).toBeNull();
+    expect(body).not.toHaveAttribute("readonly");
+    expect(backend.editIntentBodies).toEqual([]);
     await user.type(body, " edited");
     await user.click(gutter("line 38"));
     await user.click(within(panel()).getByRole("button", { name: "Add comment" }));

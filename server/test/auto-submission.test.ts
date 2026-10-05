@@ -288,6 +288,158 @@ test("pre-consent automatic drafts and accepted AI revisions stay manual without
     assert.equal(f.github.writes.length, 0);
   }));
 
+for (const status of [
+  "off",
+  "not_authorized",
+  "manual_only",
+  "human_review_requested",
+  "failed",
+  "held",
+] as const)
+  test(`ineligible ${status} edit intent is a no-op but save still excludes the edited version`, () =>
+    fixture(async (f) => {
+      await f.manualReview();
+      if (status !== "off") f.save();
+      if (status === "not_authorized") f.save([]);
+      const draft = f.service.getDetail(PR).draft!;
+      const state = f.service.db.getPublicationState(PR);
+      if (status === "human_review_requested") {
+        const source = fixtureSource();
+        state.evidence = [
+          {
+            id: "synthetic-edit-gate-evidence",
+            source: {
+              kind: source.kind,
+              id: source.id,
+              version: source.version,
+            },
+            author: source.author,
+            quote: source.body,
+            url: source.url,
+            detectedAt: source.updatedAt!,
+            acknowledgment: null,
+          },
+        ];
+        state.reenableRequired = true;
+      }
+      if (status === "held") state.reenableRequired = true;
+      if (status === "failed")
+        state.failure = {
+          step: "publication",
+          draftId: draft.id,
+          message: "SYNTHETIC publication failure",
+          at: draft.createdAt,
+        };
+      f.service.db.savePublicationState(PR, state);
+      const before = f.service.getDetail(PR);
+      assert.equal(before.pr.autoSubmission?.status, status);
+      const intent = { draftId: draft.id, version: draft.version };
+      assert.throws(
+        () => f.service.editIntent(PR, { ...intent, version: 99 }),
+        (error: unknown) =>
+          error instanceof Error &&
+          "code" in error &&
+          error.code === "draft_conflict" &&
+          /Draft version changed or automatic publication is in flight or uncertain/.test(
+            error.message,
+          ),
+      );
+      assert.deepEqual(f.service.editIntent(PR, intent), before);
+      f.service.updateDraft(PR, {
+        ...intent,
+        body: "SYNTHETIC saved ineligible edit",
+        findings: draft.findings,
+        verdict: draft.verdict,
+      });
+      const saved = f.service.getDetail(PR);
+      assert.equal(saved.draft?.version, draft.version + 1);
+      assert.equal(
+        saved.draft?.autoSubmission?.manualHold?.reason,
+        "saved_edit",
+      );
+      assert.deepEqual(saved.runs, before.runs);
+      assert.deepEqual(
+        saved.pr.autoSubmission?.evidence,
+        before.pr.autoSubmission?.evidence,
+      );
+      f.save();
+      await f.service.reconcileAutoSubmission(PR);
+      assert.equal(f.github.writes.length, 0);
+    }));
+
+test("an eligible draft's permanent hold remains unchanged when publication is later disabled", () =>
+  fixture(async (f) => {
+    f.save();
+    f.github.beforeInventory = async () => {
+      const draft = f.service.getDetail(PR).draft!;
+      assert.equal(
+        f.service.getDetail(PR).pr.autoSubmission?.status,
+        "eligible",
+      );
+      f.service.editIntent(PR, { draftId: draft.id, version: draft.version });
+    };
+    await f.automaticReview();
+    const before = f.service.getDetail(PR).draft!;
+    f.save([], false);
+    f.service.editIntent(PR, { draftId: before.id, version: before.version });
+    assert.deepEqual(f.service.getDetail(PR).draft, before);
+    assert.equal(f.service.getDetail(PR).pr.autoSubmission?.status, "off");
+    assert.equal(before.autoSubmission?.manualHold?.reason, "edit_intent");
+    assert.equal(f.github.writes.length, 0);
+  }));
+
+test("an older draft needs no intent hold while the latest automatic draft is eligible", () =>
+  fixture(async (f) => {
+    await f.manualReview();
+    const older = f.service.getDetail(PR).draft!;
+    f.save();
+    f.github.beforeInventory = async () => {
+      const before = f.service.getDetail(PR);
+      assert.equal(before.pr.autoSubmission?.status, "eligible");
+      assert.notEqual(before.pr.autoSubmission?.draftId, older.id);
+      assert.deepEqual(
+        f.service.editIntent(PR, { draftId: older.id, version: older.version }),
+        before,
+      );
+      const latest = before.draft!;
+      f.service.editIntent(PR, { draftId: latest.id, version: latest.version });
+    };
+    await f.automaticReview();
+    assert.equal(
+      f.service.db.getDraft(PR, older.id)?.autoSubmission?.manualHold,
+      null,
+    );
+    assert.equal(
+      f.service.getDetail(PR).draft?.autoSubmission?.manualHold?.reason,
+      "edit_intent",
+    );
+    assert.equal(f.github.writes.length, 0);
+  }));
+
+test("late revocation suppresses a pointless edit hold without changing publication eligibility", () =>
+  fixture(async (f) => {
+    f.save();
+    f.github.beforeInventory = async () => {
+      const draft = f.service.getDetail(PR).draft!;
+      assert.equal(
+        f.service.getDetail(PR).pr.autoSubmission?.status,
+        "eligible",
+      );
+      f.save([], false);
+      const before = f.service.getDetail(PR);
+      assert.deepEqual(
+        f.service.editIntent(PR, { draftId: draft.id, version: draft.version }),
+        before,
+      );
+    };
+    await f.automaticReview();
+    assert.equal(
+      f.service.getDetail(PR).draft?.autoSubmission?.manualHold,
+      null,
+    );
+    assert.equal(f.github.writes.length, 0);
+  }));
+
 test("unsaved server edit intent during awaited publication blocks the write and persists", () =>
   fixture(async (f) => {
     f.save();
@@ -352,8 +504,20 @@ test("uncertain automatic dispatch cannot acknowledge editable authority until e
     assert.equal(f.service.getDetail(PR).submissions[0]?.status, "submitted");
     f.service.editIntent(PR, { draftId: draft.id, version: draft.version });
     assert.equal(
+      f.service.getDetail(PR).draft?.autoSubmission?.manualHold,
+      null,
+    );
+    f.service.updateDraft(PR, {
+      draftId: draft.id,
+      version: draft.version,
+      body: "SYNTHETIC edit after confirmed reconciliation",
+      findings: draft.findings,
+      verdict: draft.verdict,
+    });
+    assert.equal(f.service.getDetail(PR).draft?.version, 2);
+    assert.equal(
       f.service.getDetail(PR).draft?.autoSubmission?.manualHold?.reason,
-      "edit_intent",
+      "saved_edit",
     );
     assert.equal(f.github.writes.length, 1);
   }));
