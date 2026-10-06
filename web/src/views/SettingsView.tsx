@@ -15,6 +15,7 @@ import { ConnectionSettings } from "../components/Connections";
 import { WorkflowSettings } from "../components/Workflow";
 import { healthTone, Notice, Pill, useToast } from "../components/ui";
 import { relativeTime } from "../lib/format";
+import { hrefFor } from "../lib/router";
 
 export function GitHubHealth({ health }: { health: AppHealth }) {
   return (
@@ -42,6 +43,12 @@ export function SettingsView() {
   const { state, setState } = useApp();
   const toast = useToast();
   const { settings, health } = state;
+  const activeReviews = state.prs.filter((pr) =>
+    pr.reviewJobs?.some((job) => job.status === "queued" || job.status === "running"),
+  );
+  const reviewing = activeReviews.filter((pr) =>
+    pr.reviewJobs?.some((job) => job.status === "running"),
+  ).length;
   const [repository, setRepository] = useState(settings.repository);
   const [interval, setInterval] = useState(String(settings.pollIntervalSeconds));
   const [concurrency, setConcurrency] = useState(String(settings.maxConcurrentReviews));
@@ -197,6 +204,29 @@ export function SettingsView() {
               )
             }
           />
+          {activeReviews.length > 0 && (
+            <Notice tone="neutral">
+              <p style={{ margin: 0 }}>
+                {activeReviews.length} PRs with review work: {activeReviews.length - reviewing}{" "}
+                queued, {reviewing} reviewing. Maximum concurrent reviews:{" "}
+                {settings.maxConcurrentReviews}.
+              </p>
+              <ul>
+                {activeReviews.map((pr) => (
+                  <li key={pr.id}>
+                    <a href={hrefFor({ name: "pr", id: pr.id })}>
+                      #{pr.number} {pr.title}
+                    </a>{" "}
+                    -{" "}
+                    {pr.reviewJobs?.some((job) => job.status === "running")
+                      ? "Reviewing"
+                      : "Queued"}
+                  </li>
+                ))}
+              </ul>
+              <a href="#/">View Inbox</a>
+            </Notice>
+          )}
           <p className="small faint" style={{ margin: 0 }}>
             These are global defaults. Each pull request can inherit or override them from its own
             page. {BASELINE_NOTE}

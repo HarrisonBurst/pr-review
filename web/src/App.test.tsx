@@ -1864,6 +1864,40 @@ describe("freshness", () => {
 });
 
 describe("automation", () => {
+  it("shows actual queued and running PR counts and links in Settings independent of inbox collapse", async () => {
+    window.location.hash = "#/settings";
+    mount({ reviewControls: true }, (b) => {
+      const captured = b.runs["pr-482"]![0]!;
+      for (const [index, id] of ["pr-482", "pr-479"].entries()) {
+        const pr = b.prs.find((pr) => pr.id === id)!;
+        b.runs[id] = [
+          {
+            ...structuredClone(captured),
+            id: `synthetic-enable-${index}`,
+            prId: id,
+            headSha: pr.headSha,
+            kind: "review",
+            status: index === 0 ? "running" : "queued",
+            result: null,
+          },
+        ];
+      }
+    });
+    const card = await screen.findByRole("region", { name: "Automation" });
+    expect(within(card).getByRole("status")).toHaveTextContent(
+      "2 PRs with review work: 1 queued, 1 reviewing. Maximum concurrent reviews: 1.",
+    );
+    expect(within(card).getByRole("link", { name: /^#482 / })).toHaveAttribute(
+      "href",
+      "#/pr/pr-482",
+    );
+    expect(within(card).getByRole("link", { name: /^#479 / })).toHaveAttribute(
+      "href",
+      "#/pr/pr-479",
+    );
+    expect(within(card).getByRole("link", { name: "View Inbox" })).toHaveAttribute("href", "#/");
+  });
+
   it("edits the four global switches, gates auto-review on polling, and never flips another switch", async () => {
     window.location.hash = "#/settings";
     const user = mount();
@@ -1909,7 +1943,12 @@ describe("automation", () => {
       'Inactive until "Poll for review requests" is on',
     );
     expect(summary).toHaveTextContent("Polling commits; auto-reviewing new commits.");
-    expect(card).toHaveTextContent(/Re-review is the explicit catch-up action/);
+    expect(card).toHaveTextContent(
+      /Turning effective auto-review on refreshes and queues eligible open inbox PRs/,
+    );
+    expect(card).toHaveTextContent(
+      /Review backlog remains an explicit local-only option for up to five PRs/,
+    );
   });
 
   it("disables the switches until a repository is configured", async () => {
@@ -1972,7 +2011,9 @@ describe("automation", () => {
 
     await user.click(within(group("Auto-review requests")).getByRole("radio", { name: "Inherit" }));
     await waitFor(() => expect(effective("Auto-review requests")).toBe("Inherit (global On)"));
-    expect(card).toHaveTextContent(/Re-review is the explicit catch-up action/);
+    expect(card).toHaveTextContent(
+      /Turning effective auto-review on refreshes and queues eligible open inbox PRs/,
+    );
   });
 
   it("summarizes background polling on the inbox from the global settings only", async () => {

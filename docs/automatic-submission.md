@@ -1,6 +1,6 @@
 # Automatic submission
 
-Automatic submission is repository-specific, optional and Off with an empty author table on a new installation. It is separate from polling and automatic draft reviews. Saving consent starts no reviews or polling and publishes no backlog. Manual exact preview/submit remains available for every author, including while automatic publication is held.
+Automatic submission is repository-specific, optional and Off with an empty author table on a new installation. It is separate from polling and automatic draft reviews. Saving consent starts no reviews or polling and publishes no existing drafts. New automatic full reviews from [review-enable catch-up](reviewing.md#enable-catch-up-and-baselines) use the same saved author/action consent and every existing result, edit, head, human-review and uncertain-write gate, not the manual backlog action's local-only intent. Eligibility is prospective, never a promise that a caught-up PR will publish. Manual exact preview/submit remains available for every author, including while automatic publication is held.
 
 ## Author and action consent
 

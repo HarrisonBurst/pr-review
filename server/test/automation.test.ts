@@ -424,20 +424,27 @@ test("per-PR overrides cover auto-review only and are gated by global polling", 
     assert.deepEqual(github.pollCalls, [
       { numbers: [1, 2], requestNumbers: [] },
     ]);
+    await waitFor(() => service.getDetail(one).runs[0]?.status === "completed");
     github.push(1, "sha-1-3");
     github.push(2, "sha-2-3");
     await service.sync("scheduled");
     await waitFor(() => service.getDetail(one).runs[0]?.status === "completed");
     assert.deepEqual(runs(service, one), [
       ["new_commits", "sha-1-3", "completed"],
+      ["new_commits", "sha-1-2", "completed"],
     ]);
     assert.deepEqual(runs(service, two), []);
     assert.equal(service.getDetail(two).pr.headSha, "sha-2-3");
 
+    service.updateAutomation(two, {
+      reviewNewCommits: "off",
+      reviewRequests: "off",
+    });
+    await service.sync("scheduled");
     service.updateSettings({ automation: allOn });
-    service.updateAutomation(two, { reviewRequests: "off" });
     assert.deepEqual(service.getDetail(two).pr.effectiveAutomation, {
       ...allOn,
+      reviewNewCommits: false,
       reviewRequests: false,
     });
     assert.deepEqual(service.getDetail(one).pr.effectiveAutomation, allOn);
@@ -445,15 +452,18 @@ test("per-PR overrides cover auto-review only and are gated by global polling", 
     github.request(1, "event-1");
     github.request(2, "event-2");
     await service.sync("scheduled");
-    await waitFor(() => service.getDetail(one).runs.length === 2);
+    await waitFor(() => service.getDetail(one).runs.length === 3);
     await settle();
     assert.equal(service.getDetail(one).runs[0].requestEventId, "event-1");
     assert.equal(service.db.hasRequestEvent("event-2"), true);
     assert.deepEqual(runs(service, two), []);
-    assert.equal(reviewer.inputs.length, 2);
+    assert.equal(reviewer.inputs.length, 3);
 
     service.updateAutomation(two, { reviewRequests: "inherit" });
-    assert.deepEqual(service.getDetail(two).pr.effectiveAutomation, allOn);
+    assert.deepEqual(service.getDetail(two).pr.effectiveAutomation, {
+      ...allOn,
+      reviewNewCommits: false,
+    });
 
     service.updateSettings({ repository: "" });
     assert.deepEqual(service.getState().settings.automation, automationOff);
@@ -497,11 +507,13 @@ test("legacy per-PR polling overrides are dropped and never authorize scheduled 
 
     current.updateSettings({ automation: { pollCommits: true } });
     await current.sync("scheduled");
+    await waitFor(() => current.getDetail(one).runs[0]?.status === "completed");
     github.push(1, "sha-1-3");
     await current.sync("scheduled");
     await waitFor(() => current.getDetail(one).runs[0]?.status === "completed");
     assert.deepEqual(runs(current, one), [
       ["new_commits", "sha-1-3", "completed"],
+      ["new_commits", "sha-1-2", "completed"],
     ]);
     assert.deepEqual(runs(current, two), []);
   } finally {
@@ -556,7 +568,7 @@ test("commit polling without auto-review keeps stale indicators current in the b
   }
 });
 
-test("new-commit automation reviews head changes only, never edits, and preserves edited drafts", async () => {
+test("new-commit automation catches up on enable, then reviews head changes only and preserves edited drafts", async () => {
   const { service, github, reviewer, cleanup } = await makeService();
   try {
     await service.manualReview(one);
@@ -569,22 +581,19 @@ test("new-commit automation reviews head changes only, never edits, and preserve
       findings: draft.findings,
       verdict: "APPROVE",
     });
+    service.updateAutomation(two, { reviewNewCommits: "off" });
     github.push(1, "sha-1-2");
     service.updateSettings({ automation: commitsOn });
     await service.sync();
-    await settle();
-    assert.equal(
-      service.getDetail(one).runs.length,
-      1,
-      "commits pushed before opting in are the baseline, not a backlog",
-    );
-    assert.equal(service.getDetail(one).pr.status, "outdated");
+    await waitFor(() => service.getDetail(one).runs[0]?.status === "completed");
+    assert.equal(service.getDetail(one).runs.length, 2);
+    assert.equal(service.getDetail(one).pr.status, "ready");
 
     const current = github.prs.get(1)!;
     current.pr = { ...current.pr, title: "Retitled", body: "Edited body" };
     await service.sync("scheduled");
     await settle();
-    assert.equal(service.getDetail(one).runs.length, 1);
+    assert.equal(service.getDetail(one).runs.length, 2);
     assert.equal(service.getDetail(one).pr.title, "Retitled");
 
     github.push(1, "sha-1-3");
@@ -592,15 +601,16 @@ test("new-commit automation reviews head changes only, never edits, and preserve
     await waitFor(() => service.getDetail(one).runs[0]?.status === "completed");
     assert.deepEqual(runs(service, one), [
       ["new_commits", "sha-1-3", "completed"],
+      ["new_commits", "sha-1-2", "completed"],
       ["manual", "sha-1-1", "completed"],
     ]);
-    assert.equal(reviewer.inputs[1].pr.headSha, "sha-1-3");
-    assert.equal(reviewer.inputs[1].diff, remote(1, "sha-1-3").diff);
+    assert.equal(reviewer.inputs[2].pr.headSha, "sha-1-3");
+    assert.equal(reviewer.inputs[2].diff, remote(1, "sha-1-3").diff);
     const after = service.getDetail(one);
     assert.equal(after.draft?.headSha, "sha-1-3");
-    assert.equal(after.draft?.body, "Review 2 of sha-1-3");
-    assert.equal(after.drafts[1]?.body, "Edited by hand");
-    assert.equal(after.drafts[1]?.headSha, "sha-1-1");
+    assert.equal(after.draft?.body, "Review 3 of sha-1-3");
+    assert.equal(after.drafts[2]?.body, "Edited by hand");
+    assert.equal(after.drafts[2]?.headSha, "sha-1-1");
     assert.equal(after.pr.status, "ready");
     assert.equal(after.freshness?.status, "fresh");
 
@@ -608,39 +618,43 @@ test("new-commit automation reviews head changes only, never edits, and preserve
     closed.pr = { ...closed.pr, state: "CLOSED", headSha: "sha-1-4" };
     await service.sync("scheduled");
     await settle();
-    assert.equal(service.getDetail(one).runs.length, 2);
+    assert.equal(service.getDetail(one).runs.length, 3);
   } finally {
     await cleanup();
   }
 });
 
-test("request automation observes a baseline, then reviews later events including same-SHA re-requests", async () => {
+test("request automation catches up on enable, then reviews later events including same-SHA re-requests", async () => {
   const { service, github, reviewer, cleanup } = await makeService();
   try {
     github.request(1, "event-1");
     service.updateSettings({ automation: requestsOn });
     await service.sync();
-    await settle();
-    assert.equal(service.getDetail(one).runs.length, 0);
+    await waitFor(() => service.getDetail(one).runs[0]?.status === "completed");
+    assert.equal(service.getDetail(one).runs.length, 1);
+    assert.equal(service.getDetail(one).runs[0].requestEventId, "event-1");
     assert.equal(service.db.getAutomationState(one).requestsArmed, true);
     assert.equal(service.db.hasRequestEvent("event-1"), true);
 
     github.request(1, "event-2");
     await service.sync("scheduled");
     await waitFor(() => service.getDetail(one).runs[0]?.status === "completed");
-    assert.deepEqual(runs(service, one), [["request", "sha-1-1", "completed"]]);
+    assert.deepEqual(runs(service, one), [
+      ["request", "sha-1-1", "completed"],
+      ["request", "sha-1-1", "completed"],
+    ]);
     assert.equal(service.getDetail(one).runs[0].requestEventId, "event-2");
 
     await service.sync("scheduled");
     await settle();
-    assert.equal(service.getDetail(one).runs.length, 1);
+    assert.equal(service.getDetail(one).runs.length, 2);
 
     github.request(1, "event-3");
     await service.sync("scheduled");
-    await waitFor(() => service.getDetail(one).runs.length === 2);
+    await waitFor(() => service.getDetail(one).runs.length === 3);
     await waitFor(() => service.getDetail(one).runs[0].status === "completed");
     assert.equal(service.getDetail(one).runs[0].headSha, "sha-1-1");
-    assert.equal(reviewer.inputs.length, 2);
+    assert.equal(reviewer.inputs.length, 3);
     assert.deepEqual(runs(service, two), []);
   } finally {
     await cleanup();
@@ -651,7 +665,7 @@ test("overlapping new-head and request triggers share one pending run", async ()
   const { service, github, reviewer, cleanup } = await makeService();
   reviewer.hold = true;
   try {
-    service.updateSettings({ automation: allOn });
+    service.db.updateSettings({ automation: allOn });
     await service.sync();
     github.push(1, "sha-1-2");
     github.request(1, "event-1");
@@ -680,7 +694,7 @@ test("overlapping new-head and request triggers share one pending run", async ()
 test("disabling a policy during an awaited poll queues nothing and does not cancel active work", async () => {
   const { service, github, reviewer, cleanup } = await makeService();
   try {
-    service.updateSettings({ automation: allOn });
+    service.db.updateSettings({ automation: allOn });
     await service.sync();
     reviewer.hold = true;
     github.push(1, "sha-1-2");
@@ -710,9 +724,11 @@ test("disabling a policy during an awaited poll queues nothing and does not canc
     github.hold = false;
     service.updateSettings({ automation: requestsOn });
     await service.sync();
+    await waitFor(() => service.getDetail(two).runs[0]?.status === "completed");
+    assert.equal(service.getDetail(two).runs[0].requestEventId, "event-2");
     github.request(2, "event-3");
     await service.sync("scheduled");
-    await waitFor(() => service.getDetail(two).runs.length === 1);
+    await waitFor(() => service.getDetail(two).runs.length === 2);
     assert.equal(service.getDetail(two).runs[0].requestEventId, "event-3");
   } finally {
     await cleanup();
@@ -723,7 +739,7 @@ test("baselines survive restart so nothing is reviewed twice", async () => {
   const { service, github, reviewer, config, cleanup } = await makeService();
   let current = service;
   try {
-    service.updateSettings({ automation: allOn });
+    service.db.updateSettings({ automation: allOn });
     await service.sync();
     github.push(1, "sha-1-2");
     github.request(1, "event-1");

@@ -56,7 +56,7 @@ const rowByKey = Object.fromEntries(
 ) as Record<AutomationKey, PolicyRow>;
 
 export const BASELINE_NOTE =
-  "Automation starts from the next poll after it is turned on; earlier commits and requests are not reviewed. Re-review is the explicit catch-up action.";
+  "Turning effective auto-review on refreshes and queues eligible open inbox PRs without a completed review of their current head. Polling must be on and PR overrides apply. Queued and reviewing work is shown in Settings and the Inbox. Existing automatic submission rules apply; Review backlog remains an explicit local-only option for up to five PRs.";
 
 export function inactiveReason(policy: AutomationPolicy, key: AutomationKey): string | null {
   const requires = rowByKey[key].requires;
