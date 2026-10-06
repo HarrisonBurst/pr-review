@@ -17,7 +17,7 @@ export function AutoSubmissionBadges({ state }: { state?: AutoSubmissionState })
       {active.length > 0 && (
         <span title={active.map((item) => `${item.author}: ${item.quote}`).join("\n")}>
           <Pill tone="warn">
-            <span aria-hidden="true">✋</span> Human review requested
+            <span aria-hidden="true">✋</span> Human requested
           </Pill>
         </span>
       )}

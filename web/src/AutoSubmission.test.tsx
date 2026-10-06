@@ -226,7 +226,18 @@ describe("source-versioned human override UI", () => {
   it("retains source-backed amber human evidence beside Ready while policy is off, without a mount scan", async () => {
     const user = mount({ autoSubmission: "off-hold" });
     await screen.findByLabelText(/GitHub review body/);
-    expect(screen.getAllByText("Human review requested")).toHaveLength(2);
+    const badges = screen.getAllByText("Human requested");
+    expect(badges).toHaveLength(2);
+    for (const badge of badges) {
+      expect(badge).toHaveTextContent(/^✋ Human requested$/);
+      expect(badge).toHaveAttribute("data-tone", "warn");
+      expect(within(badge).getByText("✋")).toHaveAttribute("aria-hidden", "true");
+      expect(badge.parentElement).toHaveAttribute(
+        "title",
+        "demo-human: SYNTHETIC: please have a person review this before publishing.",
+      );
+    }
+    expect(screen.queryByText("Human review requested")).toBeNull();
     expect(
       screen.getByText("SYNTHETIC: please have a person review this before publishing."),
     ).toBeInTheDocument();
@@ -240,8 +251,9 @@ describe("source-versioned human override UI", () => {
     expect(screen.getByRole("button", { name: "Preview and submit" })).toBeEnabled();
     await user.click(screen.getByRole("link", { name: "Inbox" }));
     const row = (await screen.findByText("Apply volume discounts on invoices")).closest(".pr-row")!;
-    expect(row).toHaveTextContent(/Ready.*Human review requested/s);
-    expect(row.querySelector('[data-tone="warn"]')).toHaveTextContent("Human review requested");
+    expect(row).toHaveTextContent(/Ready.*Human requested/s);
+    expect(row.querySelector('[data-tone="warn"]')).toHaveTextContent(/^✋ Human requested$/);
+    expect(within(row as HTMLElement).getByText("✋")).toHaveAttribute("aria-hidden", "true");
     expect(row.querySelector('[title*="demo-human"]')).toHaveAttribute(
       "title",
       "demo-human: SYNTHETIC: please have a person review this before publishing.",
@@ -252,7 +264,7 @@ describe("source-versioned human override UI", () => {
     const user = mount({ autoSubmission: "unavailable", editIntent: "locked" });
     await screen.findByLabelText(/GitHub review body/);
     expect(screen.getAllByText("Human-request detection unavailable")).toHaveLength(2);
-    expect(screen.queryByText("Human review requested")).toBeNull();
+    expect(screen.queryByText("Human requested")).toBeNull();
     expect(screen.queryByRole("link", { name: "Source on GitHub ↗" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Check automatic submission now" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Resume for later reviews" })).toBeNull();

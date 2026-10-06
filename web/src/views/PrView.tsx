@@ -621,12 +621,12 @@ export function PrView({ id, listed }: { id: string; listed: PullRequest | undef
         <div className="pr-title">
           <div className="row wrap">
             <StatusPill status={pr.status} />
-            <ViewerApprovalPill pr={pr} />
             <AutoSubmissionBadges state={pr.autoSubmission} />
             {pr.state !== "OPEN" && <Pill tone="neutral">{pr.state.toLowerCase()}</Pill>}
             {pr.requested && (
               <Pill tone="info">Review requested {relativeTime(pr.requestedAt)}</Pill>
             )}
+            <ViewerApprovalPill pr={pr} />
           </div>
           <h1>
             <span className="num">#{pr.number}</span>

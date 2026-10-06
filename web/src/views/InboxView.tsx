@@ -493,8 +493,8 @@ export function InboxView() {
                               </span>
                             )}
                             <StatusPill status={pr.status} />
-                            <ViewerApprovalPill pr={pr} />
                             <AutoSubmissionBadges state={pr.autoSubmission} />
+                            <ViewerApprovalPill pr={pr} />
                             <ReviewControls
                               pr={pr}
                               onChange={async () => {

@@ -11,9 +11,9 @@ beforeEach(() => {
 });
 afterEach(() => uninstall());
 
-for (const [kind, copy, tone] of [
-  ["current", "Approved by you", "ok"],
-  ["earlier", "Approved by you at an earlier revision", "warn"],
+for (const [kind, approvalTitle] of [
+  ["current", "Approved by you"],
+  ["earlier", "Approved by you at an earlier revision"],
 ] as const)
   it(`shows ${kind} viewer approval alongside status in inbox and detail without changing navigation or drafts`, async () => {
     const backend = new MockBackend({ reviewDelayMs: 0 });
@@ -29,18 +29,92 @@ for (const [kind, copy, tone] of [
     render(<App mock />);
     const title = await screen.findByText(pr.title);
     const row = within(title.closest(".pr-row") as HTMLElement);
-    expect(row.getByText(copy)).toHaveAttribute("data-tone", tone);
+    const approval = row.getByText("Approved by you");
+    expect(approval).toHaveAttribute("data-tone", "ok");
+    expect(approval).toHaveTextContent(/^Approved by you$/);
+    expect(approval.parentElement).toHaveAttribute("title", approvalTitle);
+    expect([...approval.closest(".right")!.querySelectorAll(".pill")].at(-1)).toBe(approval);
     expect(row.getByText("Ready")).toBeInTheDocument();
     expect(row.getByText(/Merge:|Mergeable/)).toBeInTheDocument();
     expect(row.queryByRole("button", { name: /^Re-review/ })).not.toBeInTheDocument();
     expect(title.closest("a")).toHaveAttribute("href", "#/pr/pr-482");
     await user.click(title);
     await screen.findByRole("region", { name: "Draft review" });
-    expect(screen.getByText(copy)).toHaveAttribute("data-tone", tone);
+    const detailApproval = screen.getByText("Approved by you");
+    expect(detailApproval).toHaveAttribute("data-tone", "ok");
+    expect(detailApproval).toHaveTextContent(/^Approved by you$/);
+    expect(detailApproval.parentElement).toHaveAttribute("title", approvalTitle);
+    expect([...detailApproval.closest(".pr-title")!.querySelectorAll(".pill")].at(-1)).toBe(
+      detailApproval,
+    );
     expect(screen.getByRole("button", { name: "Preview and submit" })).toBeEnabled();
     expect(backend.drafts[pr.id]).toEqual(originalDraft);
     expect(backend.submissions[pr.id] ?? []).toHaveLength(0);
   });
+
+for (const [status, copy] of [
+  ["submitted", "Submitted"],
+  ["outdated", "Outdated"],
+] as const)
+  for (const [autoStatus, autoCopy] of [
+    ["uncertain", "Automatic write uncertain"],
+    ["failed", "Auto-submit failed: publication"],
+  ] as const)
+    it(`keeps approval last after ${status}, human, ${autoStatus} and unavailable badges in inbox and detail`, async () => {
+      const backend = new MockBackend({ reviewDelayMs: 0, autoSubmission: "human" });
+      const pr = backend.prs.find((item) => item.id === "pr-482")!;
+      pr.status = status;
+      pr.viewerApproval = {
+        viewerLogin: "demo-user",
+        headSha: pr.headSha,
+        commitSha: "earlier-head",
+      };
+      pr.autoSubmission!.status = autoStatus;
+      pr.autoSubmission!.detection!.status = "unavailable";
+      const original = structuredClone(pr.autoSubmission);
+      uninstall = installMockApi(backend);
+      const user = userEvent.setup();
+      render(<App mock />);
+      const title = await screen.findByText(pr.title);
+      const row = title.closest(".pr-row")!;
+      const badges = [copy, "✋ Human requested", autoCopy, "Human-request detection unavailable"];
+      expect([...row.querySelectorAll(".right .pill")].map((pill) => pill.textContent)).toEqual([
+        ...badges,
+        "Approved by you",
+      ]);
+      await user.click(title);
+      await screen.findByRole("region", { name: "Draft review" });
+      const header = screen
+        .getByRole("heading", { name: new RegExp(pr.title) })
+        .closest(".pr-title")!;
+      const pills = [...header.querySelectorAll(".pill")];
+      expect(pills.slice(0, 4).map((pill) => pill.textContent)).toEqual(badges);
+      expect(pills[4]).toHaveTextContent(/^Review requested /);
+      expect(pills[5]).toHaveTextContent(/^Approved by you$/);
+      expect(pills).toHaveLength(6);
+      expect(pr.autoSubmission).toEqual(original);
+      expect(backend.submissions[pr.id] ?? []).toHaveLength(0);
+    });
+
+it("keeps approval after the closed-state and request pills in the detail header", async () => {
+  window.location.hash = "#/pr/pr-482";
+  const backend = new MockBackend({ reviewDelayMs: 0, autoSubmission: "human" });
+  const pr = backend.prs.find((item) => item.id === "pr-482")!;
+  pr.state = "CLOSED";
+  pr.viewerApproval = { viewerLogin: "demo-user", headSha: pr.headSha, commitSha: pr.headSha };
+  uninstall = installMockApi(backend);
+  render(<App mock />);
+  const heading = await screen.findByRole("heading", { name: new RegExp(pr.title) });
+  const pills = [...heading.closest(".pr-title")!.querySelectorAll(".pill")];
+  expect(pills.slice(0, 3).map((pill) => pill.textContent)).toEqual([
+    "Ready",
+    "✋ Human requested",
+    "closed",
+  ]);
+  expect(pills[3]).toHaveTextContent(/^Review requested /);
+  expect(pills[4]).toHaveTextContent(/^Approved by you$/);
+  expect(pills).toHaveLength(5);
+});
 
 it("keeps the row review action local and independent of the viewer approval indicator", async () => {
   const backend = new MockBackend({ reviewDelayMs: 0 });
