@@ -26,7 +26,19 @@ Older databases discard per-PR `pollCommits` and `pollRequests` overrides at sta
 
 ### Baselines and duplicate work
 
-The first poll after enabling a policy records the current head and outstanding requests without queueing reviews. Only later changes and request events trigger automatic work. Use Re-review for explicit catch-up.
+The first poll after enabling a policy records the current head and outstanding requests without queueing reviews. Only later changes and request events trigger automatic work. A restart keeps those baselines. This is deliberate arming, not a promise to review every previously open PR; the store does not retain a historical audit of when or why each baseline was armed.
+
+### Bounded backlog catch-up
+
+In the Inbox, choose **Review backlog**, inspect the current heads and select up to five PRs, then choose **Queue local draft reviews**. Opening or refreshing this selection only reads local state. Only your queue action refreshes the selected PRs and starts work, through the existing queue and maximum-concurrency/per-PR safeguards. Nothing fires on startup, page load, policy Save or arming.
+
+Eligible means open and in the tracked inbox (requested, explicitly imported, successfully reviewed or submitted), no successful full review of the exact current head, and an effective new-commit auto-review policy or a current request with an effective request auto-review policy. Both policies still require their global polling switch; PR overrides still apply. Failed/no-run PRs qualify, as do new heads of previously reviewed PRs. Manual drafts, AI revisions and visual Ready/Failed status are not proof of a full review. Untracked legacy rows and already-reviewed current heads do not qualify. Queued/running review or revision work on any head makes that PR busy.
+
+Each selected head and current request eligibility is refreshed and checked again. Changed heads, closed PRs, removed unretained requests, disabled policies and busy work are reported as skipped/busy rather than silently reviewed. Refresh the selection to explicitly choose a changed head. Errors, including unavailable execution, are reported per selection without retrying; supported queued captures retain normal restart behavior. Repeated actions share existing pending work, and a successful same-head run makes later backlog actions ineligible. A failed run can be explicitly selected again.
+
+These runs use **manual** intent and create **local drafts only**, even with automatic submission consent enabled. They never acquire automatic publication provenance. Existing edited drafts, immutable runs, proposals, consent and read grants stay unchanged. Manual exact-preview publishing and future automatic triggers keep their existing behavior. Dangerous native tools remain unrestricted independently of the app's publication controls.
+
+A bounded explicit action is preferable here to a new review-on-arming setting: it makes the selected cost and heads visible without turning every baseline/reset/resume into an automatic burst. First-observation arming is unchanged. Individual Review/Re-review remains available when an inactive policy or exact-head history excludes a PR from backlog catch-up.
 
 Baselines, request IDs and jobs persist, so restart does not review the same head or event twice. A new-head trigger and a request trigger for the same commit share one pending run. A later same-SHA re-request after a completed run queues a new review.
 

@@ -763,6 +763,38 @@ export function effectiveAutomation(
   };
 }
 
+export const backlogReviewLimit = 5;
+
+export interface BacklogReviewSelection {
+  prId: string;
+  headSha: string;
+}
+
+export type BacklogReviewReason =
+  "not_tracked" | "reviewed_head" | "automation_off" | "busy";
+
+export interface BacklogReviewPreview {
+  limit: number;
+  entries: Array<
+    BacklogReviewSelection & {
+      number: number;
+      title: string;
+      reason: BacklogReviewReason | null;
+    }
+  >;
+}
+
+export interface BacklogReviewRequest {
+  selections: BacklogReviewSelection[];
+}
+
+export interface BacklogReviewOutcome {
+  prId: string;
+  status: "queued" | "skipped" | "busy" | "error";
+  message: string;
+  runId: string | null;
+}
+
 export const maxConcurrentReviewsRange = { min: 1, max: 8 } as const;
 
 export function validConcurrentReviews(value: unknown): value is number {
