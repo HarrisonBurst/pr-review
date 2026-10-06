@@ -2,12 +2,14 @@ import { Notice } from "./ui";
 
 export interface DraftEditing {
   allowed: boolean;
+  recorded: boolean;
   pending: boolean;
   error: string | null;
   begin: () => void;
 }
 
 export function DraftEditGate({ editing }: { editing: DraftEditing }) {
+  if (editing.allowed && !editing.recorded) return null;
   return editing.allowed ? (
     <p className="small faint">
       Editing is recorded. This draft is permanently manual-only, even after discard or reload.

@@ -50,7 +50,7 @@ On first launch:
 1. Enter `owner/repository` or import a PR URL.
 2. In Settings, leave automation off and choose an execution mode, harness, model and trusted skill. Follow that mode's [Save and consent requirements](docs/execution-modes.md).
 3. Sync or import to read GitHub data. Review, Re-review and Ask AI invoke the configured harness.
-4. Use Begin editing, wait for the server to record edit intent, then edit and Save locally. This permanently makes that draft manual-only. Previously submitted drafts remain editable after their write is confirmed; editing does not undo publication. AI revisions are proposals and never silently replace manual edits.
+4. Edit and Save locally. If the selected draft is currently eligible for automatic publication, use Begin editing and wait for the server to record its permanent manual-only hold first. Ineligible drafts need no pre-edit hold; saving edits still makes them manual-only. Previously submitted drafts remain editable after their write is confirmed; editing does not undo publication. AI revisions are proposals and never silently replace manual edits.
 5. Inspect the exact Preview payload. Confirm a submission only when you intend to publish it to GitHub.
 
 Connections for Isolated and Docker use separate app-owned authorization and explicit read grants. Authentication alone grants no reviewer tools, and Connected does not prove a successful content read. See [Connections](docs/execution-modes.md#connections) before granting provider access.

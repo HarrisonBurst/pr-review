@@ -1289,7 +1289,7 @@ export class ReviewService {
   }
 
   editIntent(prId: string, intent: DraftEditIntent): PullRequestDetail {
-    this.requirePr(prId);
+    const pr = this.requirePr(prId);
     const draft = this.requireDraft(prId, intent.draftId);
     if (
       draft.version !== intent.version ||
@@ -1308,7 +1308,12 @@ export class ReviewService {
         "draft_conflict",
         "Draft version changed or automatic publication is in flight or uncertain; reload or reconcile before editing. Edit intent cannot cancel a dispatched write",
       );
-    if (!draft.autoSubmission?.manualHold) {
+    const state = this.autoSubmissionState(pr);
+    if (
+      state.status === "eligible" &&
+      state.draftId === draft.id &&
+      !draft.autoSubmission?.manualHold
+    ) {
       this.db.updateDraft({
         ...draft,
         autoSubmission: {

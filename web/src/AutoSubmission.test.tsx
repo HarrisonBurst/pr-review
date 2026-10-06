@@ -6,6 +6,7 @@ import {
   autoSubmissionReenableConfirmation,
   automationOff,
   reviewVerdicts,
+  type AutoSubmissionState,
   type PullRequestDetail,
   type Submission,
 } from "../../shared/contracts";
@@ -258,7 +259,9 @@ describe("source-versioned human override UI", () => {
     await user.click(screen.getByText("Same-pass observation: unavailable"));
     expect(screen.getByText("Discussion coverage: incomplete")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Preview and submit" })).toBeEnabled();
-    await begin(user);
+    expect(body()).not.toHaveAttribute("readonly");
+    expect(screen.queryByRole("button", { name: "Begin editing" })).toBeNull();
+    expect(backend.editIntentBodies).toEqual([]);
     await user.type(body(), " Private edit.");
     expect(screen.getByText("Unsaved edits")).toBeInTheDocument();
     expect(backend.autoCheckCalls).toBe(0);
@@ -360,7 +363,109 @@ describe("server-observed editing", () => {
     window.location.hash = "#/pr/pr-482";
   });
 
-  it("locks every draft control until successful intent, before any unsaved typing or mutation", async () => {
+  it.each<AutoSubmissionState["status"]>([
+    "off",
+    "not_authorized",
+    "manual_only",
+    "human_review_requested",
+    "failed",
+    "uncertain",
+    "held",
+    "submitted",
+  ])("allows direct editing with no notice or edit intent for %s", async (status) => {
+    const user = mount({ editIntent: "locked" }, (b) => {
+      b.prs.find((pr) => pr.id === "pr-482")!.autoSubmission!.status = status;
+    });
+    await screen.findByLabelText(/GitHub review body/);
+    const stored = structuredClone(backend.detail("pr-482").draft!);
+    expect(body()).not.toHaveAttribute("readonly");
+    expect(screen.queryByRole("button", { name: "Begin editing" })).toBeNull();
+    expect(screen.queryByText(/permanent.*manual-only/)).toBeNull();
+    for (const control of draft().getAllByRole("radio")) expect(control).toBeEnabled();
+    expect(draft().getByRole("button", { name: "Add finding" })).toBeEnabled();
+    await user.type(body(), " SYNTHETIC direct edit.");
+    expect(backend.editIntentBodies).toEqual([]);
+    expect(backend.detail("pr-482").draft).toEqual(stored);
+    await user.click(screen.getByRole("button", { name: "Save draft" }));
+    await screen.findByText("All changes saved");
+    expect(backend.detail("pr-482").draft!.version).toBe(stored.version + 1);
+    expect(backend.detail("pr-482").draft!.autoSubmission!.manualHold?.reason).toBe("saved_edit");
+    expect(backend.editIntentBodies).toEqual([]);
+    expect(screen.getByText(/Editing is recorded/)).toBeInTheDocument();
+  });
+
+  it.each(["off", "not_authorized"] as const)(
+    "allows direct code-comment composition while %s without edit intent",
+    async (status) => {
+      const user = mount({ editIntent: "locked" }, (b) => {
+        b.prs.find((pr) => pr.id === "pr-482")!.autoSubmission!.status = status;
+      });
+      await screen.findByLabelText(/GitHub review body/);
+      await user.click(gutter());
+      await user.click(
+        within(screen.getByRole("region", { name: "Selected code actions" })).getByRole("button", {
+          name: "Add comment",
+        }),
+      );
+      expect(composer().getByLabelText(/^Comment/)).not.toHaveAttribute("readonly");
+      expect(composer().queryByRole("button", { name: "Begin editing" })).toBeNull();
+      await user.type(composer().getByLabelText(/^Comment/), "SYNTHETIC direct comment");
+      await user.click(composer().getByRole("button", { name: "Add to draft" }));
+      expect(await screen.findByRole("group", { name: "Finding 4" })).toHaveTextContent(
+        "SYNTHETIC direct comment",
+      );
+      expect(backend.editIntentBodies).toEqual([]);
+      expect(backend.detail("pr-482").draft!.findings).toHaveLength(3);
+    },
+  );
+
+  it("does not gate an older draft just because the latest draft is eligible", async () => {
+    const user = mount({ editIntent: "locked" }, (b) => {
+      delete b.drafts["pr-482"]![1]!.autoSubmission;
+    });
+    await screen.findByLabelText(/GitHub review body/);
+    await user.selectOptions(screen.getByLabelText("Review draft"), "draft-482-old");
+    expect(body()).not.toHaveAttribute("readonly");
+    expect(screen.queryByRole("button", { name: "Begin editing" })).toBeNull();
+    await user.type(body(), " SYNTHETIC historical edit.");
+    expect(backend.editIntentBodies).toEqual([]);
+    expect(backend.drafts["pr-482"]![0]!.autoSubmission).toBeUndefined();
+  });
+
+  it("accepts an exact-version no-op when publication becomes ineligible during edit intent", async () => {
+    const user = mount({ editIntent: "locked" });
+    await screen.findByLabelText(/GitHub review body/);
+    const gate = backend.hold("edit-intent");
+    await user.click(draft().getByRole("button", { name: "Begin editing" }));
+    await gate.entered;
+    sourceState().status = "off";
+    gate.release();
+    await waitFor(() => expect(body()).not.toHaveAttribute("readonly"));
+    expect(backend.detail("pr-482").draft!.autoSubmission).toBeUndefined();
+    expect(screen.queryByText(/Editing is recorded/)).toBeNull();
+    expect(backend.editIntentBodies).toHaveLength(1);
+  });
+
+  it("preserves unsaved ineligible edits and version refusal across a newer saved version", async () => {
+    const user = mount({ editIntent: "locked" }, (b) => {
+      b.prs.find((pr) => pr.id === "pr-482")!.autoSubmission!.status = "off";
+    });
+    await screen.findByLabelText(/GitHub review body/);
+    await user.type(body(), " SYNTHETIC preserve unsaved.");
+    backend.drafts["pr-482"]![0]!.version += 1;
+    backend.sync();
+    await screen.findByText("Draft changed elsewhere.");
+    expect(body()).toHaveAttribute("readonly");
+    expect(screen.queryByText(/Begin editing to record a permanent manual-only hold/)).toBeNull();
+    expect(screen.getByText(/The saved version changed. Use Load latest/)).toBeInTheDocument();
+    expect((body() as HTMLTextAreaElement).value).toContain("SYNTHETIC preserve unsaved.");
+    expect(backend.editIntentBodies).toEqual([]);
+    await user.click(screen.getByRole("button", { name: "Load latest, discard my edits" }));
+    expect(body()).not.toHaveAttribute("readonly");
+    expect(backend.editIntentBodies).toEqual([]);
+  });
+
+  it("locks every eligible draft control until successful intent, before any unsaved typing or mutation", async () => {
     const user = mount({ editIntent: "locked" });
     await screen.findByLabelText(/GitHub review body/);
     const stored = backend.detail("pr-482").draft!;
@@ -448,7 +553,9 @@ describe("server-observed editing", () => {
     await waitFor(() =>
       expect(backend.detail("pr-482").draft!.autoSubmission?.manualHold).not.toBeNull(),
     );
-    expect(body()).toHaveAttribute("readonly");
+    expect(body()).not.toHaveAttribute("readonly");
+    expect(screen.queryByText(/Editing is recorded/)).toBeNull();
+    expect(backend.editIntentBodies).toHaveLength(1);
     expect(screen.getByLabelText("Review draft")).toHaveValue(
       change === "draft" ? "draft-482-old" : "draft-475",
     );
@@ -609,6 +716,8 @@ describe("server-observed editing", () => {
       },
     };
     b.submissions["pr-482"] = [submission];
+    b.prs.find((pr) => pr.id === "pr-482")!.autoSubmission!.status =
+      status === "submitting" ? "held" : status;
     if (status === "submitted") b.prs.find((pr) => pr.id === "pr-482")!.status = "submitted";
   };
 
@@ -616,7 +725,9 @@ describe("server-observed editing", () => {
     const user = mount({ editIntent: "locked" }, (b) => automaticAttempt(b, "submitted"));
     await screen.findByLabelText(/GitHub review body/);
     const previous = structuredClone(backend.submissions["pr-482"]![0]!);
-    await begin(user);
+    expect(body()).not.toHaveAttribute("readonly");
+    expect(screen.queryByRole("button", { name: "Begin editing" })).toBeNull();
+    expect(backend.editIntentBodies).toEqual([]);
     await user.type(body(), " SYNTHETIC edit after submission.");
     await user.click(screen.getByRole("button", { name: "Save draft" }));
     await screen.findByText("Draft saved");
@@ -652,11 +763,38 @@ describe("server-observed editing", () => {
     },
   );
 
+  it.each(["submitting", "uncertain"] as const)(
+    "does not bypass an exact %s write even with an existing hold and off status",
+    async (status) => {
+      const user = mount({ editIntent: "locked" }, (b) => {
+        automaticAttempt(b, status);
+        b.prs.find((pr) => pr.id === "pr-482")!.autoSubmission!.status = "off";
+        b.drafts["pr-482"]![0]!.autoSubmission = {
+          provenance: null,
+          manualHold: { reason: "edit_intent", at: "2026-01-01T00:00:00Z" },
+        };
+      });
+      await screen.findByLabelText(/GitHub review body/);
+      const hold = structuredClone(backend.detail("pr-482").draft!.autoSubmission!.manualHold);
+      expect(body()).toHaveAttribute("readonly");
+      await user.click(draft().getByRole("button", { name: "Begin editing" }));
+      await screen.findByText(
+        /Editing remains locked: SYNTHETIC: publication is in flight or uncertain/,
+      );
+      expect(body()).toHaveAttribute("readonly");
+      expect(backend.detail("pr-482").draft!.autoSubmission!.manualHold).toEqual(hold);
+      expect(backend.editIntentBodies).toHaveLength(1);
+    },
+  );
+
   it("keeps a successful intent permanent after discard and remount, while exact manual preview stays unchanged", async () => {
-    const user = mount({ editIntent: "locked", autoSubmission: "human" });
+    const user = mount({ editIntent: "locked" });
     await screen.findByLabelText(/GitHub review body/);
     const expected = backend.preview("pr-482", "draft-482", 3).payload;
     await begin(user);
+    sourceState().status = "off";
+    backend.sync();
+    await screen.findByText(/Editing is recorded/);
     await user.type(body(), " Discard me.");
     await user.click(screen.getByRole("button", { name: "Discard" }));
     await user.click(screen.getAllByRole("button", { name: "Discard" }).at(-1)!);
@@ -673,25 +811,36 @@ describe("server-observed editing", () => {
     expect(backend.submissions["pr-482"] ?? []).toEqual([]);
   });
 
-  it("records intent before accepting a revision, not when requesting a private proposal", async () => {
-    const user = mount({ editIntent: "locked" });
-    await screen.findByLabelText(/GitHub review body/);
-    await user.type(screen.getByLabelText("Ask AI to revise"), "SYNTHETIC: soften wording");
-    await user.click(screen.getByRole("button", { name: "Request revision" }));
-    await screen.findByRole("button", { name: "Accept into draft" });
-    expect(backend.editIntentBodies).toEqual([]);
-    const apply = vi.spyOn(backend, "applyProposal");
-    const gate = backend.hold("edit-intent");
-    await user.click(screen.getByRole("button", { name: "Accept into draft" }));
-    await gate.entered;
-    expect(apply).not.toHaveBeenCalled();
-    expect(body()).toHaveAttribute("readonly");
-    gate.release();
-    await screen.findByText("Proposal accepted into draft");
-    expect(apply).toHaveBeenCalledOnce();
-    expect(backend.editIntentBodies).toEqual([{ draftId: "draft-482", version: 3 }]);
-    expect(backend.detail("pr-482").draft!.autoSubmission!.manualHold?.reason).toBe("edit_intent");
-  });
+  it.each(["eligible", "off"] as const)(
+    "accepts a revision with additive holds while %s",
+    async (status) => {
+      const user = mount({ editIntent: "locked" }, (b) => {
+        b.prs.find((pr) => pr.id === "pr-482")!.autoSubmission!.status = status;
+      });
+      await screen.findByLabelText(/GitHub review body/);
+      await user.type(screen.getByLabelText("Ask AI to revise"), "SYNTHETIC: soften wording");
+      await user.click(screen.getByRole("button", { name: "Request revision" }));
+      await screen.findByRole("button", { name: "Accept into draft" });
+      expect(backend.editIntentBodies).toEqual([]);
+      const apply = vi.spyOn(backend, "applyProposal");
+      const gate = status === "eligible" ? backend.hold("edit-intent") : null;
+      await user.click(screen.getByRole("button", { name: "Accept into draft" }));
+      if (gate) {
+        await gate.entered;
+        expect(apply).not.toHaveBeenCalled();
+        expect(body()).toHaveAttribute("readonly");
+        gate.release();
+      }
+      await screen.findByText("Proposal accepted into draft");
+      expect(apply).toHaveBeenCalledOnce();
+      expect(backend.editIntentBodies).toEqual(
+        status === "eligible" ? [{ draftId: "draft-482", version: 3 }] : [],
+      );
+      expect(backend.detail("pr-482").draft!.autoSubmission!.manualHold?.reason).toBe(
+        status === "eligible" ? "edit_intent" : "revision",
+      );
+    },
+  );
 
   it("handles a version conflict without granting editing or overwriting unsaved state", async () => {
     const user = mount({ editIntent: "stale" });
