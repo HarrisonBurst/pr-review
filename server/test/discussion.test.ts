@@ -292,6 +292,85 @@ test("manual approval with an existing same-head inline review uses exact modern
   }
 });
 
+test("outdated existing inline comments retain their original anchor without blocking publication", async () => {
+  const f = await inlineInventoryFixture();
+  try {
+    const read = inlineInventoryRead(f.github.current.pr);
+    f.github.reviewInventory = () =>
+      acquireReviewInventory(async (args) => {
+        const rows = JSON.parse(await read(args));
+        if (args[1]!.includes("/comments?")) {
+          rows[0].line = null;
+          rows[0].original_line = 192;
+          assert.equal(Object.hasOwn(rows[0], "original_side"), false);
+        }
+        return JSON.stringify(rows);
+      }, f.github.current.pr);
+    const draft = f.service.getDetail(fixturePrId).draft!;
+    const preview = await f.service.preview(
+      fixturePrId,
+      draft.id,
+      draft.version,
+    );
+    assert.equal(f.github.writes.length, 0);
+    await f.service.submit(fixturePrId, preview.id);
+    const inventory = await f.github.reviewInventory();
+    assert.deepEqual(inventory.reviews[0]!.payload.comments[0], {
+      path: "src/demo.ts",
+      line: 192,
+      side: "RIGHT",
+      body: "SYNTHETIC earlier inline comment",
+      outdated: true,
+    });
+    assert.equal(preview.payload.comments[0]!.line, 2);
+    assert.equal(preview.payload.comments[0]!.side, "RIGHT");
+    assert.deepEqual(f.github.writes, [preview.payload]);
+    assert.equal(f.service.getDetail(fixturePrId).pr.status, "submitted");
+    assert.deepEqual(f.service.getDetail(fixturePrId).draft, draft);
+    await f.service.submit(fixturePrId, preview.id);
+    assert.equal(f.github.writes.length, 1);
+    const originalSide = await acquireReviewInventory(async (args) => {
+      const rows = JSON.parse(await read(args));
+      if (args[1]!.includes("/comments?"))
+        Object.assign(rows[0], {
+          line: null,
+          original_line: 192,
+          original_side: "LEFT",
+        });
+      return JSON.stringify(rows);
+    }, f.github.current.pr);
+    assert.equal(originalSide.reviews[0]!.payload.comments[0]!.side, "LEFT");
+    for (const malformed of [
+      { line: undefined },
+      { line: "192" },
+      { path: undefined },
+      { body: undefined },
+      { side: undefined },
+      { original_line: undefined },
+      { original_line: 0 },
+      { original_line: "192" },
+      { original_side: null },
+      { original_side: "UNKNOWN" },
+    ]) {
+      await assert.rejects(
+        acquireReviewInventory(async (args) => {
+          const rows = JSON.parse(await read(args));
+          if (args[1]!.includes("/comments?"))
+            Object.assign(
+              rows[0],
+              { line: null, original_line: 192 },
+              malformed,
+            );
+          return JSON.stringify(rows);
+        }, f.github.current.pr),
+        /Exact inline review placement unavailable/,
+      );
+    }
+  } finally {
+    await f.close();
+  }
+});
+
 test("inventory groups modern comments by review without guessing missing anchors from legacy positions", async () => {
   const pr = await pull();
   const read = inlineInventoryRead(pr);
@@ -338,7 +417,7 @@ test("inventory groups modern comments by review without guessing missing anchor
         if (args[1]!.includes("/comments?")) {
           rows[0].original_line = 2;
           if (field === "start_side") rows[0].start_line = 1;
-          rows[0][field] = null;
+          rows[0][field] = field === "line" ? undefined : null;
         }
         return JSON.stringify(rows);
       }, pr),

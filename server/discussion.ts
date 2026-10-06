@@ -4,7 +4,6 @@ import type {
   DiscussionSource,
   DiscussionCoverage,
   PullRequest,
-  ReviewComment,
   ReviewPayload,
 } from "../shared/contracts.js";
 import type { ReviewInventory } from "./publication.js";
@@ -355,28 +354,41 @@ export async function acquireReviewInventory(
               String(comment.pull_request_review_id) === String(row.id),
           )
         : [];
-    const comments: ReviewComment[] = inline.map((comment) => {
-      if (
-        typeof comment.path !== "string" ||
-        !Number.isInteger(comment.line) ||
-        !["LEFT", "RIGHT"].includes(comment.side) ||
-        typeof comment.body !== "string" ||
-        (comment.start_line !== null &&
-          comment.start_line !== undefined &&
-          (!Number.isInteger(comment.start_line) ||
-            !["LEFT", "RIGHT"].includes(comment.start_side)))
-      )
-        throw new Error("Exact inline review placement unavailable");
-      return {
-        path: comment.path,
-        line: comment.line,
-        side: comment.side,
-        body: comment.body,
-        ...(comment.start_line == null
-          ? {}
-          : { start_line: comment.start_line, start_side: comment.start_side }),
-      };
-    });
+    const comments: ReviewInventory["reviews"][number]["payload"]["comments"] =
+      inline.map((comment) => {
+        const outdated = comment.line === null;
+        const line = outdated ? comment.original_line : comment.line;
+        const side =
+          outdated && Object.hasOwn(comment, "original_side")
+            ? comment.original_side
+            : comment.side;
+        if (
+          typeof comment.path !== "string" ||
+          !Number.isInteger(line) ||
+          (outdated && line < 1) ||
+          !["LEFT", "RIGHT"].includes(comment.side) ||
+          !["LEFT", "RIGHT"].includes(side) ||
+          typeof comment.body !== "string" ||
+          (comment.start_line !== null &&
+            comment.start_line !== undefined &&
+            (!Number.isInteger(comment.start_line) ||
+              !["LEFT", "RIGHT"].includes(comment.start_side)))
+        )
+          throw new Error("Exact inline review placement unavailable");
+        return {
+          path: comment.path,
+          line,
+          side,
+          body: comment.body,
+          ...(outdated ? { outdated: true as const } : {}),
+          ...(comment.start_line == null
+            ? {}
+            : {
+                start_line: comment.start_line,
+                start_side: comment.start_side,
+              }),
+        };
+      });
     const event: ReviewPayload["event"] =
       row.state === "APPROVED"
         ? "APPROVE"

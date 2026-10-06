@@ -3,6 +3,7 @@ import {
   type AutoSubmissionPolicy,
   type AutoSubmissionState,
   type PullRequest,
+  type ReviewComment,
   type ReviewPayload,
 } from "../shared/contracts.js";
 import { canonicalJson } from "./schema.js";
@@ -30,7 +31,9 @@ export interface RemoteReviewEvidence {
   url: string | null;
   author: string;
   submittedAt: string;
-  payload: ReviewPayload;
+  payload: ReviewPayload & {
+    comments: (ReviewComment & { outdated?: true })[];
+  };
   commentIds: string[];
 }
 
