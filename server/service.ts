@@ -357,6 +357,10 @@ export class ReviewService {
   >();
   private readonly importOperations = new Map<string, ImportOperation>();
   private readonly backlogRefreshing = new Set<string>();
+  private readonly enableCatchUp = new Map<
+    string,
+    Pick<AutomationPolicy, "reviewNewCommits" | "reviewRequests">
+  >();
   private readonly activeJobs = new Set<Promise<void>>();
   private closed = false;
 
@@ -2050,6 +2054,21 @@ export class ReviewService {
       if (previous.reviewRequests !== next.reviewRequests)
         this.db.setRequestsArmed(pr.id, false);
     }
+    for (const pr of this.db.listInboxPrs()) {
+      if (pr.repository !== this.db.getSettings().repository) continue;
+      const previous = before.get(pr.id) ?? automationOff;
+      const next = pr.effectiveAutomation;
+      const pending = this.enableCatchUp.get(pr.id);
+      const reviewNewCommits =
+        next.reviewNewCommits &&
+        (!previous.reviewNewCommits || !!pending?.reviewNewCommits);
+      const reviewRequests =
+        next.reviewRequests &&
+        (!previous.reviewRequests || !!pending?.reviewRequests);
+      if (reviewNewCommits || reviewRequests)
+        this.enableCatchUp.set(pr.id, { reviewNewCommits, reviewRequests });
+      else this.enableCatchUp.delete(pr.id);
+    }
     this.startPolling();
     if (this.pollingActive())
       void this.sync("scheduled").catch(() => undefined);
@@ -2162,6 +2181,32 @@ export class ReviewService {
         for (const previous of tracked)
           if (!result.pullRequests.some((item) => item.pr.id === previous.id))
             this.db.clearPrRequest(previous.id);
+      const catchUp = new Map(this.enableCatchUp);
+      this.enableCatchUp.clear();
+      for (const remote of result.pullRequests) {
+        const enabled = catchUp.get(remote.pr.id);
+        if (!enabled) continue;
+        const pr = this.requirePr(remote.pr.id);
+        if (
+          pr.repository !== this.db.getSettings().repository ||
+          !inboxEligible(pr) ||
+          pr.hasReviewedHead
+        )
+          continue;
+        if (enabled.reviewNewCommits && pr.effectiveAutomation.reviewNewCommits)
+          this.enqueueReview(pr.id, "new_commits", null);
+        else if (
+          enabled.reviewRequests &&
+          pr.requested &&
+          pr.effectiveAutomation.reviewRequests
+        )
+          this.enqueueReview(
+            pr.id,
+            "request",
+            result.requests.find((request) => request.prId === pr.id)
+              ?.eventId ?? null,
+          );
+      }
       this.db.setSyncMeta({
         initialized: true,
         lastPollAt: now(),
@@ -2169,6 +2214,7 @@ export class ReviewService {
       });
       this.emit();
     } catch (error) {
+      this.enableCatchUp.clear();
       const message = error instanceof Error ? error.message : String(error);
       this.healthState.github = health("error", message);
       for (const pr of tracked)

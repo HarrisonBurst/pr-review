@@ -977,7 +977,7 @@ test("ordinary refresh reports unseen contextual versions as unavailable without
 
 test("submission-only reconciliation neither queues reviews nor consumes the historical new-head baseline", () =>
   fixture(async (f) => {
-    f.service.updateSettings({
+    f.service.db.updateSettings({
       automation: { pollCommits: true, reviewNewCommits: true },
     });
     await f.service.sync();

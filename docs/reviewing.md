@@ -24,13 +24,19 @@ The effective result appears beside each override. `Inherit (global Off)` means 
 
 Older databases discard per-PR `pollCommits` and `pollRequests` overrides at startup but retain auto-review overrides. Those overrides act only after the matching global polling switch is on. The migration never enables a global switch.
 
-### Baselines and duplicate work
+### Enable catch-up and baselines
 
-The first poll after enabling a policy records the current head and outstanding requests without queueing reviews. Only later changes and request events trigger automatic work. A restart keeps those baselines. This is deliberate arming, not a promise to review every previously open PR; the store does not retain a historical audit of when or why each baseline was armed.
+Turning an effective auto-review policy from Off to On refreshes and catches up the configured repository's visible open inbox. It queues PRs without a completed full review of their exact refreshed current head: commit automation covers tracked inbox PRs, while request-only automation requires a current request. Global polling prerequisites and per-PR Off overrides still apply. Enabling polling also catches up PRs whose saved auto-review choice thereby becomes effective; enabling a per-PR override does the same for that PR.
+
+The backend inbox projection decides this set, not browser search or collapsed groups. Closed, merged and untracked legacy rows are excluded. A local draft, AI revision, failed review or visual Ready/Failed status is not completed full-review history. Pending/running same-head reviews deduplicate through the existing queue, and stopped-head suppression still applies. Latest-head refresh and configured capture use the normal automatic `new_commits` or `request` intent, with unchanged concurrency, per-PR sequencing and per-run limits. There is no catch-up batch cap or parallel scheduler.
+
+Settings lists the actual queued/reviewing PRs and counts, and the Inbox retains its queued/reviewing filters and row controls. Catch-up creates new automatic full reviews, so existing repository author/action consent may authorize publication only if the future result, untouched draft and every existing gate/hold allow it. Enabling review automation grants no publication consent. See [automatic submission](automatic-submission.md).
+
+Unchanged saves, unrelated settings or consent changes, startup, GET/SSE and migrations never initiate catch-up. Ordinary first observations still record baselines without retroactive review; later head changes and new request events retain their normal triggers, including same-SHA human re-requests. Baselines and jobs persist across restart.
 
 ### Bounded backlog catch-up
 
-In the Inbox, choose **Review backlog**, inspect the current heads and select up to five PRs, then choose **Queue local draft reviews**. Opening or refreshing this selection only reads local state. Only your queue action refreshes the selected PRs and starts work, through the existing queue and maximum-concurrency/per-PR safeguards. Nothing fires on startup, page load, policy Save or arming.
+In the Inbox, choose **Review backlog**, inspect the current heads and select up to five PRs, then choose **Queue local draft reviews**. Opening or refreshing this selection only reads local state. Only your queue action refreshes the selected PRs and starts work, through the existing queue and maximum-concurrency/per-PR safeguards. This explicit local-only action never fires on startup, page load or an unchanged policy Save; automatic enable catch-up is separate.
 
 Eligible means open and in the tracked inbox (requested, explicitly imported, successfully reviewed or submitted), no successful full review of the exact current head, and an effective new-commit auto-review policy or a current request with an effective request auto-review policy. Both policies still require their global polling switch; PR overrides still apply. Failed/no-run PRs qualify, as do new heads of previously reviewed PRs. Manual drafts, AI revisions and visual Ready/Failed status are not proof of a full review. Untracked legacy rows and already-reviewed current heads do not qualify. Queued/running review or revision work on any head makes that PR busy.
 
@@ -38,7 +44,7 @@ Each selected head and current request eligibility is refreshed and checked agai
 
 These runs use **manual** intent and create **local drafts only**, even with automatic submission consent enabled. They never acquire automatic publication provenance. Existing edited drafts, immutable runs, proposals, consent and read grants stay unchanged. Manual exact-preview publishing and future automatic triggers keep their existing behavior. Dangerous native tools remain unrestricted independently of the app's publication controls.
 
-A bounded explicit action is preferable here to a new review-on-arming setting: it makes the selected cost and heads visible without turning every baseline/reset/resume into an automatic burst. First-observation arming is unchanged. Individual Review/Re-review remains available when an inactive policy or exact-head history excludes a PR from backlog catch-up.
+The bounded explicit option remains available independently of automatic enable catch-up and never gains automatic publication authority. First-observation arming is unchanged. Individual Review/Re-review remains available when an inactive policy or exact-head history excludes a PR from backlog catch-up.
 
 Baselines, request IDs and jobs persist, so restart does not review the same head or event twice. A new-head trigger and a request trigger for the same commit share one pending run. A later same-SHA re-request after a completed run queues a new review.
 

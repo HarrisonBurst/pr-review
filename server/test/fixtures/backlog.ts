@@ -41,7 +41,7 @@ export async function backlogFixture(count = 3) {
         })),
     };
   };
-  f.service.updateSettings({
+  f.service.db.updateSettings({
     repository: "demo/repository",
     automation: {
       pollCommits: true,
