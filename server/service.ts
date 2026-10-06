@@ -14,6 +14,11 @@ import {
   type DiscussionSnapshot,
   type DraftEditIntent,
   automationOff,
+  backlogReviewLimit,
+  type BacklogReviewPreview,
+  type BacklogReviewRequest,
+  type BacklogReviewReason,
+  type BacklogReviewOutcome,
   inboxEligible,
   dangerousConfirmation,
   dockerSetupConfirmation,
@@ -351,6 +356,7 @@ export class ReviewService {
     Promise<PullRequestDetail>
   >();
   private readonly importOperations = new Map<string, ImportOperation>();
+  private readonly backlogRefreshing = new Set<string>();
   private readonly activeJobs = new Set<Promise<void>>();
   private closed = false;
 
@@ -2174,6 +2180,132 @@ export class ReviewService {
     }
   }
 
+  private backlogReason(pr: PullRequest): BacklogReviewReason | null {
+    if (
+      pr.repository !== this.db.getSettings().repository ||
+      !inboxEligible(pr)
+    )
+      return "not_tracked";
+    if (
+      this.backlogRefreshing.has(pr.id) ||
+      this.db.listJobs("queued", pr.id).length > 0 ||
+      this.db.listJobs("running", pr.id).length > 0
+    )
+      return "busy";
+    if (pr.hasReviewedHead) return "reviewed_head";
+    if (
+      !pr.effectiveAutomation.reviewNewCommits &&
+      !(pr.requested && pr.effectiveAutomation.reviewRequests)
+    )
+      return "automation_off";
+    return null;
+  }
+
+  getBacklog(): BacklogReviewPreview {
+    return {
+      limit: backlogReviewLimit,
+      entries: this.db
+        .listInboxPrs()
+        .filter((pr) => pr.repository === this.db.getSettings().repository)
+        .sort((a, b) => a.number - b.number)
+        .map((pr) => ({
+          prId: pr.id,
+          number: pr.number,
+          title: pr.title,
+          headSha: pr.headSha,
+          reason: this.backlogReason(pr),
+        })),
+    };
+  }
+
+  async reviewBacklog(
+    request: BacklogReviewRequest,
+  ): Promise<BacklogReviewOutcome[]> {
+    if (
+      !Array.isArray(request.selections) ||
+      request.selections.length < 1 ||
+      request.selections.length > backlogReviewLimit ||
+      new Set(request.selections.map((item) => item.prId)).size !==
+        request.selections.length
+    )
+      throw new ServiceError(
+        400,
+        "invalid_backlog",
+        `Select 1-${backlogReviewLimit} distinct pull requests`,
+      );
+    const outcomes: BacklogReviewOutcome[] = [];
+    for (const selection of request.selections) {
+      const outcome: BacklogReviewOutcome = {
+        prId: selection.prId,
+        status: "skipped",
+        message: "",
+        runId: null,
+      };
+      outcomes.push(outcome);
+      let pr = this.db.getPr(selection.prId);
+      let reason = pr ? this.backlogReason(pr) : "not_tracked";
+      if (reason) {
+        outcome.status = reason === "busy" ? "busy" : "skipped";
+        outcome.message = reason;
+        continue;
+      }
+      if (pr!.headSha !== selection.headSha) {
+        outcome.message = "head_changed";
+        continue;
+      }
+      this.backlogRefreshing.add(selection.prId);
+      const startedAt = now();
+      try {
+        const refreshed = await this.github.poll(pr!.repository, [pr!], {
+          numbers: [pr!.number],
+          requestNumbers: [pr!.number],
+        });
+        const remote = refreshed.pullRequests.find(
+          (item) => item.pr.id === selection.prId,
+        );
+        if (!remote) {
+          outcome.message = "not_tracked";
+          continue;
+        }
+        this.observe(remote, {
+          requestsKnown: true,
+          automatic: false,
+          preserveBaseline: true,
+        });
+        await this.recordMergeReadiness(selection.prId);
+        this.backlogRefreshing.delete(selection.prId);
+        pr = this.requirePr(selection.prId);
+        reason = this.backlogReason(pr);
+        if (reason) {
+          outcome.status = reason === "busy" ? "busy" : "skipped";
+          outcome.message = reason;
+        } else if (pr.headSha !== selection.headSha) {
+          outcome.message = "head_changed";
+        } else {
+          outcome.runId = this.enqueueReview(pr.id, "manual", null, {
+            id: "sync",
+            status: "completed",
+            startedAt,
+            finishedAt: now(),
+            detail: `head ${pr.headSha.slice(0, 7)}`,
+          });
+          outcome.status = outcome.runId ? "queued" : "busy";
+          outcome.message = outcome.runId
+            ? "Local draft review queued"
+            : "busy";
+        }
+      } catch (error) {
+        outcome.status = "error";
+        outcome.message =
+          error instanceof Error ? error.message : String(error);
+      } finally {
+        this.backlogRefreshing.delete(selection.prId);
+        this.emit(selection.prId);
+      }
+    }
+    return outcomes;
+  }
+
   async manualReview(prId: string): Promise<PullRequestDetail> {
     const pr = this.requirePr(prId);
     let remote: RemotePullRequest;
@@ -3537,7 +3669,7 @@ export class ReviewService {
     trigger: ReviewRun["trigger"],
     requestEventId: string | null,
     preflight: RunPhase | null = null,
-  ): void {
+  ): string | null {
     const pr = this.requirePr(prId);
     if (
       trigger !== "manual" &&
@@ -3549,7 +3681,7 @@ export class ReviewService {
             (run.status === "unqueued" || !!run.cancellation),
         )
     )
-      return;
+      return null;
     const pending = this.db
       .listJobs()
       .find(
@@ -3559,7 +3691,7 @@ export class ReviewService {
           job.pr_id === prId &&
           this.db.getRun(job.run_id)?.headSha === pr.headSha,
       );
-    if (pending) return;
+    if (pending) return null;
     const diff = this.db.getDiff(prId)!;
     const run: ReviewRun = {
       cancellation: null,
@@ -3620,6 +3752,7 @@ export class ReviewService {
     });
     this.queue.schedule();
     this.emit(prId);
+    return run.id;
   }
 
   private observe(

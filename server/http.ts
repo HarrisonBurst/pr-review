@@ -1020,6 +1020,45 @@ export function createHttpServer(
           sendJson(response, 200, service.updateSettings(update));
           return;
         }
+        if (parts.length === 1 && parts[0] === "backlog") {
+          if (request.method === "GET") {
+            sendJson(response, 200, service.getBacklog());
+            return;
+          }
+          if (request.method === "POST") {
+            const body = bodyObject(await readBody(request));
+            if (
+              Object.keys(body).some((key) => key !== "selections") ||
+              !Array.isArray(body.selections) ||
+              body.selections.some(
+                (item) =>
+                  !item ||
+                  typeof item !== "object" ||
+                  Array.isArray(item) ||
+                  Object.keys(item).some(
+                    (key) => !["prId", "headSha"].includes(key),
+                  ) ||
+                  typeof item.prId !== "string" ||
+                  !item.prId ||
+                  typeof item.headSha !== "string" ||
+                  !item.headSha,
+              )
+            )
+              throw new ServiceError(
+                400,
+                "invalid_backlog",
+                "Select exact observed pull requests and heads only",
+              );
+            sendJson(
+              response,
+              200,
+              await service.reviewBacklog(
+                body as unknown as import("../shared/contracts.js").BacklogReviewRequest,
+              ),
+            );
+            return;
+          }
+        }
         if (
           request.method === "POST" &&
           parts.length === 1 &&

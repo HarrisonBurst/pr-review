@@ -3,6 +3,7 @@ import type { AppState, ImportOperation, PrStatus, PullRequest } from "../../../
 import { api, RequestError } from "../api/client";
 import { useApp } from "../app-context";
 import { ReviewControls } from "../components/ReviewControls";
+import { BacklogReview } from "../components/BacklogReview";
 import { AutoSubmissionBadges } from "../components/AutoSubmission";
 import { Notice, StatusPill, ViewerApprovalPill, useToast } from "../components/ui";
 import { relativeTime, statusLabel } from "../lib/format";
@@ -274,6 +275,7 @@ export function InboxView() {
           <p className="muted small">{pollingSummary(state)}</p>
         </div>
         <div className="actions">
+          <BacklogReview refresh={refresh} />
           <form className="import-form" onSubmit={doImport}>
             <label className="sr-only" htmlFor="import-url">
               Pull request URL

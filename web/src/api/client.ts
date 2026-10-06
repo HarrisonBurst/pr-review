@@ -1,6 +1,9 @@
 import type {
   ApiError,
   AppState,
+  BacklogReviewPreview,
+  BacklogReviewRequest,
+  BacklogReviewOutcome,
   AutomationOverrides,
   AutoSubmissionUpdate,
   AutoSubmissionReenable,
@@ -146,6 +149,9 @@ export const api = {
     request<HarnessStatus>("/api/settings/execution/setup", json(body)),
   execution: () => request<ExecutionStatus>("/api/settings/execution"),
   checkExecution: () => request<ExecutionStatus>("/api/settings/execution/check", json({})),
+  backlog: () => request<BacklogReviewPreview>("/api/backlog"),
+  reviewBacklog: (body: BacklogReviewRequest) =>
+    request<BacklogReviewOutcome[]>("/api/backlog", json(body)),
   sync: () => request<AppState>("/api/sync", json({})),
   importPr: (url: string) => request<PullRequestDetail>("/api/prs/import", json({ url })),
   detail: (id: string) => request<PullRequestDetail>(prPath(id)),
