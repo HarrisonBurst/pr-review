@@ -60,7 +60,7 @@ for (const [status, copy] of [
     ["uncertain", "Automatic write uncertain"],
     ["failed", "Auto-submit failed: publication"],
   ] as const)
-    it(`keeps approval last after ${status}, human, ${autoStatus} and unavailable badges in inbox and detail`, async () => {
+    it(`keeps approval last after ${status}, human and ${autoStatus}, with unavailable only in detail`, async () => {
       const backend = new MockBackend({ reviewDelayMs: 0, autoSubmission: "human" });
       const pr = backend.prs.find((item) => item.id === "pr-482")!;
       pr.status = status;
@@ -77,7 +77,7 @@ for (const [status, copy] of [
       render(<App mock />);
       const title = await screen.findByText(pr.title);
       const row = title.closest(".pr-row")!;
-      const badges = [copy, "✋ Human requested", autoCopy, "Human-request detection unavailable"];
+      const badges = [copy, "✋ Human requested", autoCopy];
       expect([...row.querySelectorAll(".right .pill")].map((pill) => pill.textContent)).toEqual([
         ...badges,
         "Approved by you",
@@ -88,7 +88,10 @@ for (const [status, copy] of [
         .getByRole("heading", { name: new RegExp(pr.title) })
         .closest(".pr-title")!;
       const pills = [...header.querySelectorAll(".pill")];
-      expect(pills.slice(0, 4).map((pill) => pill.textContent)).toEqual(badges);
+      expect(pills.slice(0, 4).map((pill) => pill.textContent)).toEqual([
+        ...badges,
+        "Human-request detection unavailable",
+      ]);
       expect(pills[4]).toHaveTextContent(/^Review requested /);
       expect(pills[5]).toHaveTextContent(/^Approved by you$/);
       expect(pills).toHaveLength(6);

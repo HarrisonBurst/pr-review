@@ -10,7 +10,13 @@ import { api, RequestError } from "../api/client";
 import { relativeTime, shortSha } from "../lib/format";
 import { Notice, Pill } from "./ui";
 
-export function AutoSubmissionBadges({ state }: { state?: AutoSubmissionState }) {
+export function AutoSubmissionBadges({
+  state,
+  includeUnavailable = true,
+}: {
+  state?: AutoSubmissionState;
+  includeUnavailable?: boolean;
+}) {
   const active = state?.evidence.filter((item) => !item.acknowledgment) ?? [];
   return (
     <>
@@ -27,7 +33,7 @@ export function AutoSubmissionBadges({ state }: { state?: AutoSubmissionState })
           <Pill tone="warn">Auto-submit failed: {state.failure?.step ?? "publication"}</Pill>
         </span>
       )}
-      {state?.detection?.status === "unavailable" && (
+      {includeUnavailable && state?.detection?.status === "unavailable" && (
         <Pill>Human-request detection unavailable</Pill>
       )}
     </>

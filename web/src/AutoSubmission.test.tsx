@@ -274,6 +274,17 @@ describe("source-versioned human override UI", () => {
     expect(body()).not.toHaveAttribute("readonly");
     expect(screen.queryByRole("button", { name: "Begin editing" })).toBeNull();
     expect(backend.editIntentBodies).toEqual([]);
+    const original = structuredClone(sourceState());
+    await user.click(screen.getByRole("link", { name: "Inbox" }));
+    const title = await screen.findByText("Apply volume discounts on invoices");
+    const row = within(title.closest(".pr-row") as HTMLElement);
+    expect(row.queryByText("Human-request detection unavailable")).toBeNull();
+    expect(screen.queryByText("Human-request detection unavailable")).toBeNull();
+    expect(row.getByText("Ready")).toBeInTheDocument();
+    await user.click(title);
+    await screen.findByLabelText(/GitHub review body/);
+    expect(screen.getAllByText("Human-request detection unavailable")).toHaveLength(2);
+    expect(sourceState()).toEqual(original);
     await user.type(body(), " Private edit.");
     expect(screen.getByText("Unsaved edits")).toBeInTheDocument();
     expect(backend.autoCheckCalls).toBe(0);
