@@ -84,6 +84,8 @@ function releaseCommand(child: ChildProcessWithoutNullStreams): boolean {
       process.kill(-child.pid, 0);
       return false;
     } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "EPERM")
+        return false;
       if (
         !(error instanceof Error) ||
         !("code" in error) ||

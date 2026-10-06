@@ -219,6 +219,34 @@ for (const signal of ["SIGTERM", "SIGKILL"] as const) {
   });
 }
 
+test("transient signal-0 EPERM retains ownership until ESRCH confirms release", async (t) => {
+  const { pid, result } = await inertCommand(t);
+  const kill = process.kill.bind(process);
+  const refusal = Object.assign(new Error("kill EPERM (injected probe)"), {
+    code: "EPERM",
+  });
+  const signals: Array<Parameters<typeof process.kill>[1]> = [];
+  let probes = 0;
+  t.mock.method(
+    process,
+    "kill",
+    (...[target, value]: Parameters<typeof process.kill>) => {
+      assert.equal(target, -pid);
+      signals.push(value);
+      if (value === 0 && probes++ < 2) throw refusal;
+      return kill(target, value);
+    },
+  );
+  kill(-pid, "SIGTERM");
+  assert.equal((await result).signal, "SIGTERM");
+  assert.deepEqual(signals, [0]);
+  assert.throws(() => kill(-pid, 0), { code: "ESRCH" });
+  await terminateRunningCommands();
+  assert.deepEqual(signals, [0, 0, "SIGTERM", 0]);
+  await terminateRunningCommands();
+  assert.deepEqual(signals, [0, 0, "SIGTERM", 0]);
+});
+
 test("shutdown does not signal a command again after observed close", async (t) => {
   const { pid, result } = await inertCommand(t);
   const kill = process.kill.bind(process);
