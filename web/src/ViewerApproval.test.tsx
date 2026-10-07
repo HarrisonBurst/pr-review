@@ -121,6 +121,84 @@ for (const [status, copy] of [
       expect(backend.submissions[pr.id] ?? []).toHaveLength(0);
     });
 
+for (const [group, source] of [
+  ["Requested of you", "direct"],
+  ["Requested of your teams", "team"],
+  ["Other tracked PRs", null],
+] as const)
+  it(`sorts current approval below submitted in ${group} without changing membership or filters`, async () => {
+    const backend = new MockBackend({ reviewDelayMs: 0 });
+    const ids = ["pr-482", "pr-468", "pr-455", "pr-490", "pr-471"];
+    backend.prs = ids.map((id, index) => {
+      const pr = backend.prs.find((item) => item.id === id)!;
+      const current = id === "pr-482" || id === "pr-471";
+      const earlier = id === "pr-468";
+      pr.status =
+        id === "pr-490" ? "unreviewed" : id === "pr-455" || id === "pr-471" ? "submitted" : "ready";
+      pr.title = `SYNTHETIC ${current ? "current viewer approval" : earlier ? "earlier viewer approval" : pr.status} ${id}`;
+      pr.requested = source !== null && !current;
+      pr.requestSource = pr.requested ? source : null;
+      pr.historicalRequestSource = source;
+      pr.imported = true;
+      pr.requestedAt = pr.createdAt = `2026-01-0${index + 1}T00:00:00Z`;
+      pr.viewerApproval =
+        current || earlier
+          ? {
+              viewerLogin: "demo-user",
+              headSha: pr.headSha,
+              commitSha: current ? pr.headSha : "earlier-head",
+            }
+          : null;
+      return pr;
+    });
+    const original = structuredClone({
+      prs: backend.prs,
+      drafts: backend.drafts,
+      submissions: backend.submissions,
+      runs: backend.runs,
+      settings: backend.settings,
+    });
+    uninstall = installMockApi(backend);
+    const user = userEvent.setup();
+    render(<App mock />);
+    await screen.findByText(backend.prs[0]!.title);
+    if (source === null) await user.click(screen.getByText(group));
+    const rows = () => within(screen.getByRole("list", { name: group })).getAllByRole("listitem");
+    const order = () => rows().map((row) => row.querySelector("a.title")!.getAttribute("href"));
+    const hrefs = (ids: string[]) => ids.map((id) => `#/pr/${id}`);
+    expect(order()).toEqual(hrefs(["pr-468", "pr-490", "pr-455", "pr-482", "pr-471"]));
+    expect(screen.getAllByRole("listitem")).toHaveLength(5);
+    expect(screen.getByText(group).closest("summary")).toHaveTextContent("5");
+    expect(within(rows()[0]!).getByText("Earlier approval")).toBeInTheDocument();
+    expect(within(rows()[3]!).getByText("Ready")).toBeInTheDocument();
+    expect(within(rows()[4]!).getByText("Submitted")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /^Submitted/ }));
+    expect(order()).toEqual(hrefs(["pr-455", "pr-471"]));
+    expect(screen.getByText(group).closest("summary")).toHaveTextContent("2 of 5");
+    await user.click(screen.getByRole("button", { name: /^Ready/ }));
+    expect(order()).toEqual(hrefs(["pr-468", "pr-482"]));
+    await user.click(screen.getByRole("button", { name: /^Needs attention/ }));
+    expect(order()).toEqual(hrefs(["pr-468", "pr-482"]));
+    await user.click(screen.getByRole("button", { name: /^Unreviewed/ }));
+    expect(order()).toEqual(hrefs(["pr-490"]));
+    await user.click(screen.getByRole("button", { name: /^All/ }));
+    await user.type(screen.getByRole("searchbox"), "viewer");
+    expect(order()).toEqual(hrefs(["pr-468", "pr-482", "pr-471"]));
+    await user.clear(screen.getByRole("searchbox"));
+    const projected = backend.state().prs;
+    for (const pr of original.prs) {
+      const row = projected.find((item) => item.id === pr.id)!;
+      expect(row.status).toBe(pr.status);
+      expect(row.viewerApproval).toEqual(pr.viewerApproval);
+      expect(row.historicalRequestSource).toBe(pr.historicalRequestSource);
+      expect(row.requested).toBe(pr.requested);
+    }
+    expect(backend.drafts).toEqual(original.drafts);
+    expect(backend.submissions).toEqual(original.submissions);
+    expect(backend.runs).toEqual(original.runs);
+    expect(backend.settings).toEqual(original.settings);
+  });
+
 it("keeps approval after the closed-state and request pills in the detail header", async () => {
   window.location.hash = "#/pr/pr-482";
   const backend = new MockBackend({ reviewDelayMs: 0, autoSubmission: "human" });

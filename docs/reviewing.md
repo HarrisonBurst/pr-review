@@ -96,7 +96,9 @@ The row title links to the PR page, and clicking elsewhere on the row opens it t
 
 ### Ordering and settled submissions
 
-Within each group, Ready drafts come first, then other active statuses, then settled submissions. Each band runs from oldest to newest. A settled PR has Submitted status only while a confirmed successful submission remains the newest evidence for its latest draft.
+Within each group, Ready drafts come first, then other active statuses, then settled submissions, then PRs currently approved by you on their exact current commit. Each band runs from oldest to newest. Earlier approval alone keeps the normal status ordering. Approval ordering changes no status, group, filter or review action. A settled PR has Submitted status only while a confirmed successful submission remains the newest evidence for its latest draft.
+
+For credential-free built-UI verification, run `npm run build`, then `node --import tsx server/test/fixtures/inbox-browser.ts`. The launcher serves the normal bundle on an allocated loopback port with Demo mode and SYNTHETIC records: #20998 earlier approval, #21647 current approval, #42 a seeded submission receipt, #44 unreviewed and #45 Ready. Expected order is #20998, #45, #44, #42, #21647. Earlier approval remains labeled, and Submitted, Ready, Needs attention and search filters still use the existing status/matching rules. `--empty` exercises setup; `status` reports synthetic state and zero native dispatches/writes; `quit` removes the disposable HOME/database. No GitHub submission is dispatched.
 
 To remain settled, the submission must meet all of these conditions:
 
