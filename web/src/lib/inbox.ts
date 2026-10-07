@@ -42,6 +42,9 @@ export function settled(pr: PullRequest): boolean {
 }
 
 function rank(pr: PullRequest): number {
+  const approval = pr.viewerApproval;
+  if (approval?.commitSha && approval.headSha === pr.headSha && approval.commitSha === pr.headSha)
+    return 3;
   if (pr.status === "ready") return 0;
   return settled(pr) ? 2 : 1;
 }
