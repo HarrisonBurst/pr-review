@@ -1201,6 +1201,30 @@ export function createHttpServer(
                 "not_found",
                 "Independent classifier checks are retired",
               );
+            if (parts[3] === "override") {
+              if (
+                Object.keys(body).some(
+                  (key) => !["mode", "expectedVersion"].includes(key),
+                ) ||
+                !["inherit", "restrict", "allow"].includes(String(body.mode)) ||
+                !Number.isInteger(body.expectedVersion) ||
+                Number(body.expectedVersion) < 0
+              )
+                throw new ServiceError(
+                  400,
+                  "invalid_auto_submission",
+                  "Invalid automatic submission override",
+                );
+              sendJson(
+                response,
+                200,
+                service.updateAutoSubmissionOverride(
+                  prId,
+                  body as unknown as import("../shared/contracts.js").AutoSubmissionOverrideUpdate,
+                ),
+              );
+              return;
+            }
             if (parts[3] === "reconcile" && Object.keys(body).length === 0) {
               sendJson(
                 response,

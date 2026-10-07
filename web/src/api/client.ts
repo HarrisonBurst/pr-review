@@ -7,6 +7,7 @@ import type {
   AutomationOverrides,
   AutoSubmissionUpdate,
   AutoSubmissionReenable,
+  AutoSubmissionOverrideUpdate,
   HumanReviewAcknowledgment,
   DraftEditIntent,
   DockerCapabilityDisclosure,
@@ -183,6 +184,8 @@ export const api = {
     request<PullRequestDetail>(`${prPath(id)}/auto-submission/reconcile`, json({})),
   acknowledgeHumanReview: (id: string, body: HumanReviewAcknowledgment) =>
     request<PullRequestDetail>(`${prPath(id)}/auto-submission/acknowledge`, json(body)),
+  updateAutoSubmissionOverride: (id: string, body: AutoSubmissionOverrideUpdate) =>
+    request<PullRequestDetail>(`${prPath(id)}/auto-submission/override`, json(body)),
   reenableAutoSubmission: (id: string, body: AutoSubmissionReenable) =>
     request<PullRequestDetail>(`${prPath(id)}/auto-submission/re-enable`, json(body)),
   createDraft: (id: string) => request<PullRequestDetail>(`${prPath(id)}/drafts`, json({})),

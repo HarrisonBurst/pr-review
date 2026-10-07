@@ -1228,6 +1228,260 @@ for (const extension of ["normal", "null"] as const)
       );
     }));
 
+test("PR submission overrides persist across refresh/restart and reverse only their own restriction", () =>
+  fixture(async (f) => {
+    assert.deepEqual(f.service.getDetail(PR).pr.autoSubmissionOverride, {
+      mode: "inherit",
+      version: 0,
+    });
+    const policy = structuredClone(f.service.getState().settings);
+    const publication = structuredClone(f.service.db.getPublicationState(PR));
+    f.service.updateAutoSubmissionOverride(PR, {
+      mode: "restrict",
+      expectedVersion: 0,
+    });
+    assert.equal(
+      f.service.getDetail(PR).pr.autoSubmission?.status,
+      "manual_only",
+    );
+    await f.service.sync();
+    await f.restart();
+    assert.deepEqual(f.service.getDetail(PR).pr.autoSubmissionOverride, {
+      mode: "restrict",
+      version: 1,
+    });
+    assert.throws(
+      () =>
+        f.service.updateAutoSubmissionOverride(PR, {
+          mode: "allow",
+          expectedVersion: 0,
+        }),
+      /override changed/,
+    );
+    f.service.updateAutoSubmissionOverride(PR, {
+      mode: "allow",
+      expectedVersion: 1,
+    });
+    assert.equal(f.service.getDetail(PR).pr.autoSubmission?.status, "off");
+    assert.deepEqual(f.service.db.getPublicationState(PR), publication);
+    assert.deepEqual(f.service.getState().settings, policy);
+    assert.equal(f.service.db.listJobs().length, 0);
+    assert.equal(f.github.writes.length, 0);
+  }));
+
+for (const mode of ["inherit", "allow"] as const)
+  test(`restrict prevents automatic writes; returning to ${mode} restores policy without publishing by itself`, () =>
+    fixture(async (f) => {
+      f.save();
+      f.service.updateAutoSubmissionOverride(PR, {
+        mode: "restrict",
+        expectedVersion: 0,
+      });
+      await f.automaticReview();
+      assert.equal(f.github.writes.length, 0);
+      assert.equal(
+        f.service.getDetail(PR).pr.autoSubmission?.status,
+        "manual_only",
+      );
+      f.service.updateAutoSubmissionOverride(PR, { mode, expectedVersion: 1 });
+      assert.equal(
+        f.service.getDetail(PR).pr.autoSubmission?.status,
+        "eligible",
+      );
+      await f.restart();
+      f.service.getDetail(PR);
+      f.service.getState();
+      assert.equal(f.github.writes.length, 0);
+      f.github.current.pr.headSha = "synthetic-override-future-head";
+      await f.automaticReview();
+      assert.equal(f.github.writes.length, 1);
+    }));
+
+for (const mode of ["inherit", "allow"] as const)
+  for (const gate of [
+    "global-off",
+    "author-consent",
+    "verdict",
+    "draft-edit",
+    "uncertain",
+    "provenance",
+  ] as const)
+    test(`${mode} never bypasses ${gate}`, () =>
+      fixture(async (f) => {
+        f.service.updateAutoSubmissionOverride(PR, {
+          mode: "restrict",
+          expectedVersion: 0,
+        });
+        f.save(
+          gate === "author-consent"
+            ? []
+            : gate === "verdict"
+              ? ["APPROVE"]
+              : ["COMMENT"],
+          gate !== "global-off",
+        );
+        await f.automaticReview();
+        if (gate === "draft-edit") {
+          const draft = f.service.getDetail(PR).draft!;
+          f.service.updateDraft(PR, {
+            draftId: draft.id,
+            version: draft.version,
+            body: "SYNTHETIC saved edit",
+            findings: draft.findings,
+            verdict: draft.verdict,
+          });
+        }
+        if (gate === "provenance") {
+          const state = f.service.db.getPublicationState(PR);
+          state.failure = {
+            step: "provenance",
+            message: "SYNTHETIC unresolved provenance",
+            draftId: null,
+            at: "2026-01-01T00:00:00Z",
+          };
+          f.service.db.savePublicationState(PR, state);
+        }
+        if (gate === "uncertain") {
+          const draft = f.service.getDetail(PR).draft!;
+          const preview = await f.service.preview(PR, draft.id, draft.version);
+          f.github.failWrite = true;
+          await assert.rejects(f.service.submit(PR, preview.id), /uncertain/);
+        }
+        const stored = structuredClone(f.service.db.getPublicationState(PR));
+        const drafts = structuredClone(f.service.getDetail(PR).drafts);
+        const writes = f.github.writes.length;
+        f.service.updateAutoSubmissionOverride(PR, {
+          mode,
+          expectedVersion: 1,
+        });
+        const status = f.service.getDetail(PR).pr.autoSubmission?.status;
+        assert.equal(
+          status,
+          gate === "global-off"
+            ? "off"
+            : gate === "author-consent"
+              ? "not_authorized"
+              : gate === "uncertain"
+                ? "uncertain"
+                : gate === "provenance"
+                  ? "failed"
+                  : "manual_only",
+        );
+        assert.deepEqual(f.service.db.getPublicationState(PR), stored);
+        assert.deepEqual(f.service.getDetail(PR).drafts, drafts);
+        assert.equal(f.github.writes.length, writes);
+      }));
+
+test("override changes preserve every evidence version and independent resume hold", () =>
+  fixture(async (f) => {
+    f.save();
+    f.github.sources = [fixtureSource()];
+    f.reviewer.decisions.set("synthetic-comment", "requested");
+    await f.automaticReview();
+    const stored = structuredClone(f.service.db.getPublicationState(PR));
+    for (const [expectedVersion, mode] of (
+      ["restrict", "allow", "inherit"] as const
+    ).entries()) {
+      f.service.updateAutoSubmissionOverride(PR, { mode, expectedVersion });
+      assert.equal(
+        f.service.getDetail(PR).pr.autoSubmission?.status,
+        "human_review_requested",
+      );
+      assert.deepEqual(f.service.db.getPublicationState(PR), stored);
+      await assert.rejects(
+        f.service.reenableAutoSubmission(PR, {
+          expectedVersion: stored.version,
+          confirmation: autoSubmissionReenableConfirmation,
+        }),
+        (error: unknown) =>
+          (error as { code: string }).code === "auto_submission_held",
+      );
+    }
+    const evidence = stored.evidence[0]!;
+    f.service.acknowledgeHumanReview(PR, {
+      expectedVersion: stored.version,
+      evidenceId: evidence.id,
+      source: evidence.source,
+      action: "resolve",
+    });
+    f.service.updateAutoSubmissionOverride(PR, {
+      mode: "allow",
+      expectedVersion: 3,
+    });
+    assert.equal(f.service.getDetail(PR).pr.autoSubmission?.status, "held");
+    assert.equal(f.service.db.getPublicationState(PR).reenableRequired, true);
+    assert.equal(f.github.writes.length, 0);
+  }));
+
+test("a restriction saved during awaited publication work fences the final automatic write", () =>
+  fixture(async (f) => {
+    f.save();
+    f.github.beforeInventory = async () => {
+      f.service.updateAutoSubmissionOverride(PR, {
+        mode: "restrict",
+        expectedVersion: 0,
+      });
+      f.github.beforeInventory = undefined;
+    };
+    await f.automaticReview();
+    assert.equal(f.github.writes.length, 0);
+    assert.equal(f.service.getDetail(PR).submissions.length, 0);
+  }));
+
+test("additive override migration preserves stored draft holds, publication state and acknowledgments", () =>
+  fixture(async (f) => {
+    await f.manualReview();
+    const draft = f.service.getDetail(PR).draft!;
+    f.service.updateDraft(PR, {
+      draftId: draft.id,
+      version: draft.version,
+      body: "SYNTHETIC preserved edit",
+      findings: draft.findings,
+      verdict: draft.verdict,
+    });
+    const state = f.service.db.getPublicationState(PR);
+    state.reenableRequired = true;
+    state.evidence = [1, 2, 3].map((version) => ({
+      id: `synthetic-stored-${version}`,
+      source: {
+        kind: "comment",
+        id: "synthetic-repeated-source",
+        version: String(version).repeat(64),
+      },
+      author: "synthetic-participant",
+      quote: "SYNTHETIC stored request",
+      url: "https://example.invalid/synthetic-source",
+      detectedAt: "2026-01-01T00:00:00Z",
+      acknowledgment:
+        version === 1
+          ? { action: "dismiss", at: "2026-01-02T00:00:00Z" }
+          : null,
+    }));
+    f.service.db.savePublicationState(PR, state);
+    const drafts = structuredClone(f.service.getDetail(PR).drafts);
+    const settings = structuredClone(f.service.getState().settings);
+    const stored = f.service.db.sqlite
+      .prepare("SELECT auto_submission_json FROM prs WHERE id = ?")
+      .get(PR);
+    f.service.db.sqlite.exec(
+      "ALTER TABLE prs DROP COLUMN auto_submission_override_json",
+    );
+    await f.restart();
+    assert.deepEqual(f.service.getDetail(PR).pr.autoSubmissionOverride, {
+      mode: "inherit",
+      version: 0,
+    });
+    assert.deepEqual(
+      f.service.db.sqlite
+        .prepare("SELECT auto_submission_json FROM prs WHERE id = ?")
+        .get(PR),
+      stored,
+    );
+    assert.deepEqual(f.service.getDetail(PR).drafts, drafts);
+    assert.deepEqual(f.service.getState().settings, settings);
+    assert.equal(f.github.writes.length, 0);
+  }));
+
 test("restart-stranded automatic attempts become uncertain and never receive a blind retry", () =>
   fixture(async (f) => {
     f.save();

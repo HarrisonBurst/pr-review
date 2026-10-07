@@ -1971,7 +1971,13 @@ describe("automation", () => {
       "Polling review requests; auto-reviewing requests. Inherits the global defaults.",
     );
     expect(within(card).queryByRole("radiogroup", { name: /Poll for/ })).toBeNull();
-    expect(within(card).getAllByRole("link", { name: "change in Settings" })).toHaveLength(2);
+    expect(within(card).getAllByRole("link", { name: "change in Settings" })).toHaveLength(3);
+    expect(
+      within(within(card).getByRole("radiogroup", { name: "Automatic submission" })).getByRole(
+        "radio",
+        { name: "Inherit" },
+      ),
+    ).toBeChecked();
     const group = (name: string) => within(card).getByRole("radiogroup", { name });
     const effective = (name: string) =>
       within(card).getByLabelText(new RegExp(`^${name}: `)).textContent;

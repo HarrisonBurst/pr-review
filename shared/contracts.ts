@@ -1037,6 +1037,23 @@ export interface HumanReviewAcknowledgment {
   action: "dismiss" | "resolve";
 }
 
+export type AutoSubmissionOverrideMode = "inherit" | "restrict" | "allow";
+
+export interface AutoSubmissionOverride {
+  mode: AutoSubmissionOverrideMode;
+  version: number;
+}
+
+export interface AutoSubmissionOverrideUpdate {
+  mode: AutoSubmissionOverrideMode;
+  expectedVersion: number;
+}
+
+export const inheritAutoSubmissionOverride: AutoSubmissionOverride = {
+  mode: "inherit",
+  version: 0,
+};
+
 export interface AutoSubmissionReenable {
   expectedVersion: number;
   confirmation: typeof autoSubmissionReenableConfirmation;
@@ -1178,6 +1195,7 @@ export interface PullRequest {
   hasReviewHistory: boolean;
   mergeReadiness: MergeReadiness | null;
   automation: AutomationOverrides;
+  autoSubmissionOverride?: AutoSubmissionOverride;
   effectiveAutomation: AutomationPolicy;
 }
 

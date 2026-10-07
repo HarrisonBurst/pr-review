@@ -6,6 +6,9 @@ import {
   type AutomationOverrideKey,
   type AutomationOverrides,
   type AutomationPolicy,
+  type AutoSubmissionOverride,
+  type AutoSubmissionOverrideMode,
+  type AutoSubmissionState,
 } from "../../../shared/contracts";
 import { Segmented, Switch } from "./ui";
 
@@ -153,20 +156,43 @@ export function AutomationOverridesCard({
   overrides,
   busy,
   onChange,
+  autoSubmission,
 }: {
   global: AutomationPolicy;
   overrides: AutomationOverrides;
   busy: boolean;
   onChange: (update: Partial<AutomationOverrides>) => void;
+  autoSubmission?: {
+    globalEnabled: boolean;
+    override: AutoSubmissionOverride;
+    state?: AutoSubmissionState;
+    onChange: (mode: AutoSubmissionOverrideMode) => void;
+  };
 }) {
   const effective = effectiveAutomation(global, overrides);
-  const overridden = Object.values(overrides).some((mode) => mode !== "inherit");
+  const submissionState = autoSubmission?.state;
+  const submissionReason = submissionState
+    ? {
+        off: "Repository policy is off",
+        not_authorized: submissionState.message,
+        manual_only: submissionState.message,
+        eligible: "Eligible under policy; fresh gates still apply",
+        human_review_requested: "Held with human-review evidence",
+        failed: `Held: ${submissionState.failure?.step ?? "publication"} failed`,
+        uncertain: "Held: automatic write uncertain",
+        held: "Held: resume or another operation is required",
+        submitted: "Already submitted for this head",
+      }[submissionState.status]
+    : "No automatic publication authority was recorded";
+  const overridden =
+    Object.values(overrides).some((mode) => mode !== "inherit") ||
+    (autoSubmission && autoSubmission.override.mode !== "inherit");
   return (
     <div className="stack" style={{ gap: 10 }}>
       <p className="small muted" data-testid="automation-summary">
         {summarize(effective)}
         {overridden
-          ? " Auto-review overrides apply to this pull request."
+          ? " Automation overrides apply to this pull request."
           : " Inherits the global defaults."}
       </p>
       {policyGroups.map((group) => {
@@ -211,6 +237,42 @@ export function AutomationOverridesCard({
           </div>
         );
       })}
+      {autoSubmission && (
+        <div className="policy-group compact">
+          <div className="policy-group-title">Submission</div>
+          <div className="policy-override">
+            <span className="policy-label">Automatic submission</span>
+            <span className="policy-global small" data-on={autoSubmission.globalEnabled}>
+              {autoSubmission.globalEnabled ? "On" : "Off"} · global setting,{" "}
+              <a href="#/settings">change in Settings</a>
+            </span>
+          </div>
+          <div className="row wrap" style={{ gap: 8 }}>
+            <Segmented
+              label="Automatic submission"
+              value={
+                autoSubmission.override.mode === "restrict"
+                  ? "off"
+                  : autoSubmission.override.mode === "allow"
+                    ? "on"
+                    : "inherit"
+              }
+              options={modeOptions}
+              disabled={busy}
+              onChange={(mode) =>
+                autoSubmission.onChange(
+                  mode === "off" ? "restrict" : mode === "on" ? "allow" : "inherit",
+                )
+              }
+            />
+            <span className="policy-effective small" role="status">
+              {autoSubmission.override.mode === "restrict"
+                ? "Off (this PR) · manual-only"
+                : `${autoSubmission.override.mode === "allow" ? "On (this PR)" : `Inherit (global ${autoSubmission.globalEnabled ? "On" : "Off"})`} · ${submissionReason}`}
+            </span>
+          </div>
+        </div>
+      )}
       <p className="small faint">{BASELINE_NOTE}</p>
     </div>
   );
