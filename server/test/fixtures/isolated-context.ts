@@ -170,10 +170,20 @@ export async function fixture(
       const started = diagnostics ? performance.now() : 0;
       service.nextQueuedJob = nextQueuedJob;
       schedule();
-      for (let attempt = 0; attempt < 200; attempt++) {
+      let progress = "";
+      for (let attempt = 0, stalled = 0; stalled < 200; attempt++, stalled++) {
         const run = service.getDetail(prId).runs[0];
         diagnostics?.dispatch(run, attempt, started);
         if (!["queued", "running"].includes(run.status)) return;
+        const next = JSON.stringify([
+          run.status,
+          run.progress?.phases.map((phase) => phase.status),
+          run.progress?.entries?.map((entry) => entry.status),
+        ]);
+        if (next !== progress) {
+          progress = next;
+          stalled = 0;
+        }
         await new Promise((resolve) => setTimeout(resolve, 20));
       }
       assert.fail("Fixture queue did not finish");
