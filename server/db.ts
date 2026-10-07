@@ -1,4 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
+import type { RemotePullRequest } from "./adapters.js";
 import {
   publicationOff,
   publicationState,
@@ -143,11 +144,7 @@ interface RunRow {
   integration_json: string;
 }
 
-export interface RunSnapshot {
-  pr: PullRequest;
-  diff: string;
-  diffTruncated: boolean;
-}
+export type RunSnapshot = RemotePullRequest;
 
 interface DraftRow {
   auto_submission_json: string | null;
@@ -510,6 +507,7 @@ export class AppDatabase {
       ["previews", "authority_json"],
       ["previews", "recovery_json"],
       ["run_snapshots", "discussion_json"],
+      ["run_snapshots", "viewer_login"],
     ])
       if (!this.columns(table!).has(column!))
         this.sqlite.exec(`ALTER TABLE ${table} ADD COLUMN ${column} TEXT`);
@@ -1343,13 +1341,14 @@ export class AppDatabase {
   createRunSnapshot(runId: string, snapshot: RunSnapshot): void {
     this.sqlite
       .prepare(
-        "INSERT INTO run_snapshots (run_id, pr_json, diff, diff_truncated) VALUES (?, ?, ?, ?)",
+        "INSERT INTO run_snapshots (run_id, pr_json, diff, diff_truncated, viewer_login) VALUES (?, ?, ?, ?, ?)",
       )
       .run(
         runId,
         json(snapshot.pr),
         snapshot.diff,
         snapshot.diffTruncated ? 1 : 0,
+        snapshot.viewerLogin ?? null,
       );
   }
 
@@ -1376,17 +1375,19 @@ export class AppDatabase {
   getRunSnapshot(runId: string): RunSnapshot | null {
     const row = this.sqlite
       .prepare(
-        "SELECT pr_json, diff, diff_truncated FROM run_snapshots WHERE run_id = ?",
+        "SELECT pr_json, diff, diff_truncated, viewer_login FROM run_snapshots WHERE run_id = ?",
       )
       .get(runId) as
       | {
           pr_json: string;
           diff: string;
           diff_truncated: number;
+          viewer_login: string | null;
         }
       | undefined;
     return row
       ? {
+          ...(row.viewer_login ? { viewerLogin: row.viewer_login } : {}),
           pr: parsed<PullRequest>(row.pr_json),
           diff: row.diff,
           diffTruncated: row.diff_truncated === 1,

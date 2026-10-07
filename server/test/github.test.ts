@@ -158,6 +158,7 @@ test("viewer approval reads all review pages, including external approval, and r
       numbers: [7],
       requestNumbers: [],
     });
+    assert.equal(result.pullRequests[0]!.viewerLogin, "demo-user");
     assert.deepEqual(result.pullRequests[0]!.pr.viewerApproval, {
       viewerLogin: "demo-user",
       headSha: headA,
@@ -223,6 +224,7 @@ test("viewer acquisition failure, missing identity, partial pagination and unsup
         7,
       );
       assert.equal(remote.pr.viewerApproval, null);
+      assert.equal(remote.viewerLogin, responses.user ? null : "demo-user");
       assert.equal(remote.diff, diffFor(headA));
     }
   } finally {
