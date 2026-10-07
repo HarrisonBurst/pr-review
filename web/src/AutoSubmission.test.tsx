@@ -70,8 +70,8 @@ describe("automatic submission policy", () => {
 
   it("adds actionless normalized rows and rejects duplicates and invalid logins without a lookup", async () => {
     const user = mount();
-    await screen.findByRole("heading", { name: "Automatic submission" });
     const lookup = vi.spyOn(globalThis, "fetch");
+    await screen.findByRole("heading", { name: "Automatic submission" });
     await add(user);
     for (const action of reviewVerdicts)
       expect(
@@ -85,7 +85,9 @@ describe("automatic submission policy", () => {
       await add(user, invalid);
       expect(policy().getByText(/Enter a GitHub username/)).toBeInTheDocument();
     }
-    expect(lookup.mock.calls).toEqual([]);
+    expect(lookup.mock.calls).toEqual([
+      ["/api/settings/harness", { headers: { Accept: "application/json" } }],
+    ]);
     expect(backend.settings.autoSubmission!.authors).toEqual([]);
     await user.click(policy().getByRole("button", { name: "Remove mira" }));
     expect(policy().getByText(/No authors authorized/)).toBeInTheDocument();
