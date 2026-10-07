@@ -854,7 +854,7 @@ test("automatic inline placement and private evidence exclusion reuse the exact 
     );
   }));
 
-test("known bots and exact confirmed app automation do not manufacture requests; username alone never excludes", () =>
+test("known bots and exact confirmed app automation do not manufacture requests; non-viewer username alone never excludes", () =>
   fixture(async (f) => {
     f.save();
     await f.automaticReview();
@@ -870,6 +870,7 @@ test("known bots and exact confirmed app automation do not manufacture requests;
       authorType: "Bot" as const,
       provenance: "bot" as const,
     };
+    f.github.current.viewerLogin = "demo-other-viewer";
     f.github.sources = [own, bot];
     f.reviewer.decisions.set(own.id, "requested");
     f.reviewer.decisions.set(bot.id, "requested");
@@ -881,7 +882,7 @@ test("known bots and exact confirmed app automation do not manufacture requests;
     assert.equal(f.service.getDetail(PR).pr.autoSubmission?.evidence.length, 1);
   }));
 
-test("only complete exact confirmed inline identities count as app automation, not same-author/body copies", () =>
+test("only complete exact confirmed inline identities count as app automation, not non-viewer same-author/body copies", () =>
   fixture(async (f) => {
     f.save();
     f.reviewer.result.findings = [
@@ -911,16 +912,19 @@ test("only complete exact confirmed inline identities count as app automation, n
       reviewId: submission.githubReviewId!,
       threadId: "synthetic-thread",
     };
+    f.github.current.viewerLogin = "demo-other-viewer";
     f.github.sources = [own];
     f.reviewer.decisions.set(own.id, "requested");
     await f.manualReview();
     assert.equal(f.service.getDetail(PR).pr.autoSubmission?.evidence.length, 0);
+    f.github.current.viewerLogin = "demo-user";
     await f.restart();
     f.github.current.pr.headSha = "synthetic-next-inline-head";
     f.github.sources = [{ ...own, outdated: true }];
     await f.automaticReview();
     assert.equal(f.github.writes.length, 2);
     assert.equal(f.service.getDetail(PR).pr.autoSubmission?.evidence.length, 0);
+    f.github.current.viewerLogin = "demo-other-viewer";
     f.github.sources = [{ ...own, id: "synthetic-human-copy" }];
     f.reviewer.decisions.set("synthetic-human-copy", "requested");
     await f.manualReview();

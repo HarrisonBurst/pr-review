@@ -31,6 +31,7 @@ import {
 } from "./util.js";
 
 export interface RemotePullRequest {
+  viewerLogin?: string | null;
   pr: PullRequest;
   diff: string;
   diffTruncated: boolean;
@@ -555,6 +556,7 @@ export class GithubCliAdapter implements GithubAdapter {
       } catch {}
     }
     return {
+      viewerLogin: viewer ?? null,
       pr,
       diff: clampText(diff, diffLimit),
       diffTruncated: diff.length > diffLimit,
@@ -1054,6 +1056,7 @@ export class DemoGithubAdapter implements GithubAdapter {
 }
 
 export interface ReviewerInput {
+  viewerLogin?: RemotePullRequest["viewerLogin"];
   discussion?: DiscussionSnapshot | null;
   pr: PullRequest;
   diff: string;

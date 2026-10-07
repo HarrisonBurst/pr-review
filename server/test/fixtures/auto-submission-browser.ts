@@ -9,6 +9,7 @@ import {
   publicationFixture,
   fixturePrId,
   fixtureSource,
+  inferenceOnlyQuotes,
 } from "./auto-submission.js";
 import { saveFixtureExecution } from "./current-settings.js";
 import { deferredWork } from "./sync-lifecycle.js";
@@ -56,7 +57,7 @@ if (!address || typeof address === "string")
 f.config.port = address.port;
 console.log(`SYNTHETIC inert fixture: http://127.0.0.1:${address.port}`);
 console.log(
-  "Commands: manual, automatic, human, clear, unavailable, coverage-fail, intent hold|release|fail|normal, status, quit",
+  "Commands: manual, automatic, human, viewer, mixed, legacy-viewer, inferred, historical-inferred, clear, unavailable, coverage-fail, intent hold|release|fail|normal, status, quit",
 );
 const input = createInterface({ input: process.stdin });
 try {
@@ -80,13 +81,50 @@ try {
       await f.automaticReview();
       f.service.updateSettings({ automation: automationOff });
     } else if (
-      ["human", "clear", "unavailable", "coverage-fail"].includes(command)
+      [
+        "human",
+        "viewer",
+        "mixed",
+        "legacy-viewer",
+        "inferred",
+        "historical-inferred",
+        "clear",
+        "unavailable",
+        "coverage-fail",
+      ].includes(command)
     ) {
-      f.github.sources = command === "human" ? [fixtureSource()] : [];
+      f.github.sources = command.includes("inferred")
+        ? inferenceOnlyQuotes.map((quote, index) =>
+            fixtureSource(quote, `synthetic-inference-${index}`),
+          )
+        : command === "human"
+          ? [fixtureSource()]
+          : ["viewer", "mixed", "legacy-viewer"].includes(command)
+            ? [
+                fixtureSource(
+                  "SYNTHETIC Please request a human review of this change.",
+                  "synthetic-viewer",
+                  "demo-user",
+                ),
+                ...(command === "mixed" ? [fixtureSource()] : []),
+              ]
+            : [];
       f.github.complete = command !== "coverage-fail";
       f.reviewer.extensionMode = command === "unavailable" ? "null" : "normal";
-      f.reviewer.decisions.set("synthetic-comment", "requested");
-      await f.manualReview();
+      f.reviewer.decisions.clear();
+      for (const source of f.github.sources)
+        f.reviewer.decisions.set(
+          source.id,
+          command === "inferred" ? "not_requested" : "requested",
+        );
+      console.log("SYNTHETIC preselected observation, not model detection");
+      const viewerLogin = f.github.current.viewerLogin;
+      if (command === "legacy-viewer") delete f.github.current.viewerLogin;
+      try {
+        await f.manualReview();
+      } finally {
+        f.github.current.viewerLogin = viewerLogin;
+      }
     } else if (command === "status") {
       const detail = f.service.db.getPr(fixturePrId)
         ? f.service.getDetail(fixturePrId)
