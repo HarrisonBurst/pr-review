@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -4257,6 +4257,48 @@ describe("oauth connections", () => {
     expect(panel(syntheticId).getByLabelText("Client id")).toHaveValue("manual-synthetic-client");
     expect(panel(syntheticId).getByLabelText("Client method")).toHaveValue("none");
     expect(panel(syntheticId).queryByLabelText("Client secret (write-only)")).toBeNull();
+    expect(backend.oauthStates[syntheticId]?.clientId).toBeUndefined();
+    expect(backend.oauthActions).toEqual(["discover"]);
+  });
+
+  it("keeps the latest Settings snapshot and manual OAuth client input when an older refresh finishes last", async () => {
+    window.location.hash = "#/settings";
+    let holdNextState = false;
+    let release!: () => void;
+    let enter!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    const entered = new Promise<void>((resolve) => (enter = resolve));
+    const user = mount({ harness: "saved", oauth: "discovered" }, (b) => {
+      const handle = b.handle.bind(b);
+      b.handle = async (method, path, body) => {
+        const snapshot = await handle(method, path, body);
+        if (method === "GET" && path === "/api/state" && holdNextState) {
+          holdNextState = false;
+          enter();
+          await held;
+        }
+        return snapshot;
+      };
+    });
+    await screen.findByTestId(`oauth-form-${slackId}`);
+    await user.click(card(syntheticId).getByRole("button", { name: "Import OAuth metadata" }));
+    await screen.findByTestId(`oauth-${syntheticId}`);
+    await user.click(
+      panel(syntheticId).getByRole("button", { name: "Discover OAuth requirements" }),
+    );
+    await screen.findByTestId(`oauth-form-${syntheticId}`);
+    await waitFor(() => expect(panel(syntheticId).getByLabelText("Client id")).not.toBeDisabled());
+    await user.type(panel(syntheticId).getByLabelText("Client id"), "manual-synthetic-client");
+    expect(panel(syntheticId).getByLabelText("Client id")).toHaveValue("manual-synthetic-client");
+    holdNextState = true;
+    backend.updateSettings({ pollIntervalSeconds: backend.settings.pollIntervalSeconds });
+    await entered;
+    backend.updateSettings({ pollIntervalSeconds: 160 });
+    await waitFor(() => expect(screen.getByLabelText("Poll interval (seconds)")).toHaveValue(160));
+    await act(async () => release());
+    expect(screen.getByLabelText("Poll interval (seconds)")).toHaveValue(160);
+    expect(panel(syntheticId).getByLabelText("Client id")).toHaveValue("manual-synthetic-client");
+    expect(backend.settings.pollIntervalSeconds).toBe(160);
     expect(backend.oauthStates[syntheticId]?.clientId).toBeUndefined();
     expect(backend.oauthActions).toEqual(["discover"]);
   });
