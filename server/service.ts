@@ -2174,7 +2174,12 @@ export class ReviewService {
         )
           await this.refreshHumanDetection(pr);
       }
-      for (const request of result.requests) this.observeRequest(request);
+      for (const request of result.requests)
+        this.observeRequest(
+          request,
+          result.pullRequests.find((remote) => remote.pr.id === request.prId)
+            ?.viewerLogin,
+        );
       for (const remote of result.pullRequests)
         this.armRequests(remote.pr.id, scope);
       if (!scope)
@@ -2194,7 +2199,13 @@ export class ReviewService {
         )
           continue;
         if (enabled.reviewNewCommits && pr.effectiveAutomation.reviewNewCommits)
-          this.enqueueReview(pr.id, "new_commits", null);
+          this.enqueueReview(
+            pr.id,
+            "new_commits",
+            null,
+            null,
+            remote.viewerLogin,
+          );
         else if (
           enabled.reviewRequests &&
           pr.requested &&
@@ -2205,6 +2216,8 @@ export class ReviewService {
             "request",
             result.requests.find((request) => request.prId === pr.id)
               ?.eventId ?? null,
+            null,
+            remote.viewerLogin,
           );
       }
       this.db.setSyncMeta({
@@ -2328,13 +2341,19 @@ export class ReviewService {
         } else if (pr.headSha !== selection.headSha) {
           outcome.message = "head_changed";
         } else {
-          outcome.runId = this.enqueueReview(pr.id, "manual", null, {
-            id: "sync",
-            status: "completed",
-            startedAt,
-            finishedAt: now(),
-            detail: `head ${pr.headSha.slice(0, 7)}`,
-          });
+          outcome.runId = this.enqueueReview(
+            pr.id,
+            "manual",
+            null,
+            {
+              id: "sync",
+              status: "completed",
+              startedAt,
+              finishedAt: now(),
+              detail: `head ${pr.headSha.slice(0, 7)}`,
+            },
+            remote.viewerLogin,
+          );
           outcome.status = outcome.runId ? "queued" : "busy";
           outcome.message = outcome.runId
             ? "Local draft review queued"
@@ -2375,13 +2394,19 @@ export class ReviewService {
         "pull request is no longer open, so no review was started",
       );
     }
-    this.enqueueReview(prId, "manual", null, {
-      id: "sync",
-      status: "completed",
-      startedAt,
-      finishedAt: now(),
-      detail: `head ${remote.pr.headSha.slice(0, 7)}`,
-    });
+    this.enqueueReview(
+      prId,
+      "manual",
+      null,
+      {
+        id: "sync",
+        status: "completed",
+        startedAt,
+        finishedAt: now(),
+        detail: `head ${remote.pr.headSha.slice(0, 7)}`,
+      },
+      remote.viewerLogin,
+    );
     return this.getDetail(prId);
   }
 
@@ -3550,6 +3575,7 @@ export class ReviewService {
         this.db.captureRunDiscussion(run.id, discussion);
       }
       const input: ReviewerInput = {
+        viewerLogin: snapshot.viewerLogin,
         discussion,
         pr: snapshot.pr,
         diff: snapshot.diff,
@@ -3580,6 +3606,18 @@ export class ReviewService {
         output.result.humanReviewRequest,
         discussion,
       );
+      const viewerLogin = snapshot.viewerLogin;
+      if (viewerLogin && extension.observation)
+        extension.observation.evidence = extension.observation.evidence.filter(
+          (item) => item.author.toLowerCase() !== viewerLogin.toLowerCase(),
+        );
+      else if (!viewerLogin)
+        result.rationale = [
+          result.rationale,
+          "Authenticated viewer identity was not captured; viewer-authored human-review evidence was not excluded.",
+        ]
+          .filter(Boolean)
+          .join("\n\n");
       result.humanReviewRequest = extension.observation;
       this.recordHumanReview(run, result, discussion, extension.diagnostics);
       tracker.phase(
@@ -3715,6 +3753,7 @@ export class ReviewService {
     trigger: ReviewRun["trigger"],
     requestEventId: string | null,
     preflight: RunPhase | null = null,
+    viewerLogin?: RemotePullRequest["viewerLogin"],
   ): string | null {
     const pr = this.requirePr(prId);
     if (
@@ -3778,6 +3817,7 @@ export class ReviewService {
     this.db.transaction(() => {
       this.db.createRun(run);
       this.db.createRunSnapshot(run.id, {
+        viewerLogin,
         pr,
         diff: diff.diff,
         diffTruncated: diff.truncated,
@@ -3843,13 +3883,16 @@ export class ReviewService {
           options.automatic &&
           pr.state === "OPEN"
         )
-          this.enqueueReview(id, "new_commits", null);
+          this.enqueueReview(id, "new_commits", null, null, remote.viewerLogin);
       }
     }
     return pr;
   }
 
-  private observeRequest(request: PollRequest): void {
+  private observeRequest(
+    request: PollRequest,
+    viewerLogin?: RemotePullRequest["viewerLogin"],
+  ): void {
     const pr = this.db.getPr(request.prId);
     if (!pr) return;
     const inserted = this.db.insertRequestEvent(
@@ -3865,7 +3908,7 @@ export class ReviewService {
       pr.state === "OPEN" &&
       this.db.getAutomationState(pr.id).requestsArmed
     )
-      this.enqueueReview(pr.id, "request", request.eventId);
+      this.enqueueReview(pr.id, "request", request.eventId, null, viewerLogin);
   }
 
   private armRequests(prId: string, scope: PollScope | undefined): void {
@@ -3918,6 +3961,7 @@ export class ReviewService {
       await this.refreshHumanDetection(this.requirePr(pr.id));
       const diff = this.db.getDiff(pr.id)!;
       return {
+        viewerLogin: remote.viewerLogin,
         pr: this.requirePr(pr.id),
         diff: diff.diff,
         diffTruncated: diff.truncated,

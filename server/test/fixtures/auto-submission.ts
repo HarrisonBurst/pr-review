@@ -22,14 +22,19 @@ import type { ReviewInventory } from "../../publication.js";
 import { saveFixtureExecution } from "./current-settings.js";
 
 export const fixturePrId = "demo/repository#42";
+export const inferenceOnlyQuotes = [
+  "Confirm publication separately before that merges?",
+  "Please list this as an intentional difference for publication review.",
+] as const;
 export const fixtureSource = (
   body = "SYNTHETIC Please ask a person to review",
   id = "synthetic-comment",
+  author = "demo-author",
 ): DiscussionSource => ({
   kind: "comment",
   id,
   version: revision(body),
-  author: "demo-author",
+  author,
   authorType: "User",
   body,
   url: `https://github.com/demo/repository/pull/42#issuecomment-${id}`,
@@ -191,6 +196,7 @@ export async function publicationFixture(empty = false) {
   });
   const github = new InertPublicationGithub();
   github.current = await github.getPullRequest("demo/repository", 42);
+  github.current.viewerLogin = "demo-user";
   const reviewer = new InertPublicationReviewer();
   let service = await ReviewService.create(config, github, reviewer);
   service.queue.schedule = () => {};
