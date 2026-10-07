@@ -107,6 +107,82 @@ describe("inbox grouping", () => {
     ]);
   });
 
+  it("orders current viewer approval below submissions regardless of local status", () => {
+    const submitted = pr({ id: "submitted", status: "submitted", requestedAt: "2026-01-03" });
+    for (const status of [
+      "ready",
+      "unreviewed",
+      "queued",
+      "reviewing",
+      "failed",
+      "outdated",
+      "submitted",
+    ] as const) {
+      const approved = pr({
+        id: "approved",
+        status,
+        requestedAt: "2026-01-01",
+        viewerApproval: {
+          viewerLogin: "demo-user",
+          headSha: base.headSha,
+          commitSha: base.headSha,
+        },
+      });
+      expect([approved, submitted].sort(compareInbox).map((row) => row.id)).toEqual([
+        "submitted",
+        "approved",
+      ]);
+      expect(approved.status).toBe(status);
+      expect(settled(approved)).toBe(status === "submitted");
+    }
+  });
+
+  it("keeps earlier, stale, incomplete and absent approval in normal status order", () => {
+    const submitted = pr({ id: "submitted", status: "submitted", requestedAt: "2026-01-03" });
+    for (const viewerApproval of [
+      { viewerLogin: "demo-user", headSha: base.headSha, commitSha: "earlier-head" },
+      { viewerLogin: "demo-user", headSha: "stale-observation", commitSha: base.headSha },
+      { viewerLogin: "demo-user", headSha: base.headSha, commitSha: "" },
+      null,
+      undefined,
+    ]) {
+      const row = pr({ id: "not-current", requestedAt: "2026-01-01", viewerApproval });
+      for (const status of ["ready", "unreviewed", "outdated", "submitted"] as const)
+        expect([{ ...row, status }, submitted].sort(compareInbox).map((item) => item.id)).toEqual([
+          "not-current",
+          "submitted",
+        ]);
+    }
+  });
+
+  it("retains age, unknown-date, number and id ordering within the current-approval band", () => {
+    const approved = pr({
+      viewerApproval: { viewerLogin: "demo-user", headSha: base.headSha, commitSha: base.headSha },
+    });
+    const rows = [
+      { ...approved, id: "unknown", number: 1, requestedAt: null, createdAt: null },
+      { ...approved, id: "same-b", number: 4, requestedAt: "2026-01-02" },
+      {
+        ...approved,
+        id: "newer",
+        number: 2,
+        status: "submitted" as const,
+        requestedAt: "2026-01-03",
+      },
+      { ...approved, id: "same-a", number: 4, requestedAt: "2026-01-02" },
+      { ...approved, id: "oldest", number: 5, requestedAt: "2026-01-01" },
+      { ...approved, id: "smaller", number: 3, requestedAt: "2026-01-02" },
+    ];
+    expect(rows.sort(compareInbox).map((row) => row.id)).toEqual([
+      "oldest",
+      "smaller",
+      "same-a",
+      "same-b",
+      "newer",
+      "unknown",
+    ]);
+  });
+
   it("returns a submitted PR to active order once its status projects new action", () => {
     const active = pr({ id: "active", number: 9, status: "unreviewed", requestedAt: "2026-01-09" });
     const submitted = pr({ id: "was", number: 1, status: "submitted", requestedAt: "2026-01-01" });
