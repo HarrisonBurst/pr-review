@@ -90,10 +90,11 @@ export function ViewerApprovalPill({ pr }: { pr: PullRequest }) {
   const current = approval.commitSha === pr.headSha;
   return (
     <span
-      className="viewer-approval"
+      className="viewer-approval row wrap"
       title={current ? "Approved by you" : "Approved by you at an earlier revision"}
     >
       <Pill tone="ok">Approved by you</Pill>
+      {!current && <Pill tone="warn">Earlier approval</Pill>}
     </span>
   );
 }
