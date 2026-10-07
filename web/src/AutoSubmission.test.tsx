@@ -70,8 +70,8 @@ describe("automatic submission policy", () => {
 
   it("adds actionless normalized rows and rejects duplicates and invalid logins without a lookup", async () => {
     const user = mount();
-    await screen.findByRole("heading", { name: "Automatic submission" });
     const lookup = vi.spyOn(globalThis, "fetch");
+    await screen.findByRole("heading", { name: "Automatic submission" });
     await add(user);
     for (const action of reviewVerdicts)
       expect(
@@ -85,7 +85,9 @@ describe("automatic submission policy", () => {
       await add(user, invalid);
       expect(policy().getByText(/Enter a GitHub username/)).toBeInTheDocument();
     }
-    expect(lookup.mock.calls).toEqual([]);
+    expect(lookup.mock.calls).toEqual([
+      ["/api/settings/harness", { headers: { Accept: "application/json" } }],
+    ]);
     expect(backend.settings.autoSubmission!.authors).toEqual([]);
     await user.click(policy().getByRole("button", { name: "Remove mira" }));
     expect(policy().getByText(/No authors authorized/)).toBeInTheDocument();
@@ -218,6 +220,173 @@ describe("automatic submission policy", () => {
   });
 });
 
+describe("PR automatic submission Automation row", () => {
+  beforeEach(() => {
+    window.location.hash = "#/pr/pr-482";
+  });
+
+  const row = () => within(screen.getByRole("radiogroup", { name: "Automatic submission" }));
+  const details = () => screen.getByText("Details", { selector: "summary" });
+
+  it("uses the existing row/control/global Settings link and one card-level collapsed Details", async () => {
+    mount({ autoSubmission: "human" });
+    await screen.findByLabelText(/GitHub review body/);
+    const card = screen.getByRole("region", { name: "Automation" });
+    expect(screen.getAllByRole("region", { name: "Automation" })).toHaveLength(1);
+    expect(screen.queryByRole("region", { name: "Automatic submission" })).toBeNull();
+    expect(within(card).getAllByRole("radiogroup")).toHaveLength(3);
+    expect(
+      row()
+        .getAllByRole("radio")
+        .map((item) => item.textContent),
+    ).toEqual(["Inherit", "On", "Off"]);
+    expect(row().getByRole("radio", { name: "Inherit" })).toHaveAttribute("aria-checked", "true");
+    expect(within(card).getAllByRole("link", { name: "change in Settings" })).toHaveLength(3);
+    const submission = row().getByRole("radio", { name: "Off" }).closest(".policy-group")!;
+    expect(submission).toHaveTextContent("Off · global setting, change in Settings");
+    expect(within(card).getByTestId("automation-summary")).toHaveTextContent(
+      "Inherits the global defaults.",
+    );
+    expect(details().closest("details")).not.toHaveAttribute("open");
+    expect(screen.getByText("synthetic-source-v1")).not.toBeVisible();
+    expect(screen.getByRole("button", { name: "Resolve this evidence" })).not.toBeVisible();
+    expect(screen.queryByRole("switch", { name: "Automatic submission" })).toBeNull();
+  });
+
+  it("Off persists across remount; On and Inherit remove only that preference and never widen consent", async () => {
+    const user = mount({ autoSubmission: "human" });
+    await screen.findByLabelText(/GitHub review body/);
+    const evidence = structuredClone(sourceState());
+    const policy = structuredClone(backend.settings.autoSubmission);
+    const draftHold = structuredClone(backend.detail("pr-482").draft!.autoSubmission);
+    row().getByRole("radio", { name: "Off" }).focus();
+    await user.keyboard("{Enter}");
+    await screen.findByText("Off (this PR) · manual-only");
+    expect(backend.autoSubmissionOverrideBodies).toEqual([
+      { mode: "restrict", expectedVersion: 0 },
+    ]);
+    cleanup();
+    render(<App mock />);
+    await screen.findByLabelText(/GitHub review body/);
+    expect(row().getByRole("radio", { name: "Off" })).toHaveAttribute("aria-checked", "true");
+    await user.click(row().getByRole("radio", { name: "On" }));
+    await waitFor(() =>
+      expect(row().getByRole("radio", { name: "On" })).toHaveAttribute("aria-checked", "true"),
+    );
+    expect(screen.getByText("On (this PR) · Held with human-review evidence")).toBeInTheDocument();
+    await user.click(row().getByRole("radio", { name: "Inherit" }));
+    await waitFor(() =>
+      expect(row().getByRole("radio", { name: "Inherit" })).toHaveAttribute("aria-checked", "true"),
+    );
+    expect(backend.autoSubmissionOverrideBodies).toEqual([
+      { mode: "restrict", expectedVersion: 0 },
+      { mode: "allow", expectedVersion: 1 },
+      { mode: "inherit", expectedVersion: 2 },
+    ]);
+    expect(sourceState()).toEqual(evidence);
+    expect(backend.settings.autoSubmission).toEqual(policy);
+    expect(backend.detail("pr-482").draft!.autoSubmission).toEqual(draftHold);
+    expect(backend.humanAcknowledgments).toEqual([]);
+    expect(backend.autoReenableBodies).toEqual([]);
+    expect(backend.autoCheckCalls).toBe(0);
+    expect(backend.submissions["pr-482"] ?? []).toEqual([]);
+  });
+
+  it("On without author consent shows the authoritative reason, not eligibility", async () => {
+    const user = mount({ autoSubmission: "unavailable" }, (b) => {
+      b.settings.autoSubmission!.enabled = true;
+      b.settings.autoSubmission!.authors = [];
+      const state = b.prs.find((pr) => pr.id === "pr-482")!.autoSubmission!;
+      state.status = "not_authorized";
+      state.message = "No automatic verdict permissions for this PR author";
+    });
+    await screen.findByLabelText(/GitHub review body/);
+    await user.click(row().getByRole("radio", { name: "On" }));
+    await screen.findByText("On (this PR) · No automatic verdict permissions for this PR author");
+    expect(backend.settings.autoSubmission!.authors).toEqual([]);
+    expect(backend.humanAcknowledgments).toEqual([]);
+    expect(backend.autoReenableBodies).toEqual([]);
+  });
+
+  it("preserves every repeated stored version and actions, detection and readable classifier behind native Details", async () => {
+    const user = mount({ autoSubmission: "human" }, (b) => {
+      const state = b.prs.find((pr) => pr.id === "pr-482")!.autoSubmission!;
+      state.evidence = [1, 2, 3].map((version) => ({
+        ...state.evidence[0]!,
+        id: `synthetic-history-${version}`,
+        author: "synthetic-participant",
+        source: { ...state.evidence[0]!.source, version: `synthetic-stored-version-${version}` },
+      }));
+      state.check = {
+        status: "clear",
+        headSha: "synthetic-historical-head",
+        revision: "synthetic-historical-revision",
+        checkedAt: "2026-01-01T00:00:00Z",
+        coverage: state.detection!.coverage,
+        message: "SYNTHETIC retained classifier history",
+        detector: {
+          profile: "no-tools-1",
+          mode: "separated",
+          harness: "pi",
+          model: "synthetic-historical-model",
+        },
+      };
+    });
+    await screen.findByLabelText(/GitHub review body/);
+    details().focus();
+    expect(details()).toHaveFocus();
+    expect(details().tagName).toBe("SUMMARY");
+    await user.click(details());
+    expect(details().closest("details")).toHaveAttribute("open");
+    for (const version of [1, 2, 3])
+      expect(screen.getByText(`synthetic-stored-version-${version}`)).toBeVisible();
+    expect(screen.getAllByText("synthetic-participant")).toHaveLength(3);
+    expect(screen.getAllByRole("link", { name: "Source on GitHub ↗" })).toHaveLength(3);
+    const first = structuredClone(sourceState().evidence[0]!);
+    await user.click(screen.getAllByRole("button", { name: "Resolve this evidence" })[0]!);
+    await screen.findByText(/Resolved.*Retained as acknowledgment history/);
+    const second = structuredClone(sourceState().evidence[1]!);
+    await user.click(screen.getAllByRole("button", { name: "Dismiss this evidence" })[0]!);
+    await screen.findByText(/Dismissed.*Retained as acknowledgment history/);
+    expect(backend.humanAcknowledgments).toEqual([
+      { expectedVersion: 1, evidenceId: first.id, source: first.source, action: "resolve" },
+      { expectedVersion: 2, evidenceId: second.id, source: second.source, action: "dismiss" },
+    ]);
+    expect(sourceState().evidence).toHaveLength(3);
+    expect(screen.getByText(/State: held/)).toBeInTheDocument();
+    expect(screen.getByText(/remains held across new commits/)).toBeVisible();
+    await user.click(screen.getByText("Same-pass observation: found"));
+    expect(screen.getByText("Discussion coverage: complete")).toBeVisible();
+    await user.click(screen.getByText("Historical classifier check: clear"));
+    expect(screen.getByText("SYNTHETIC retained classifier history")).toBeVisible();
+    expect(screen.getByText(/synthetic-historical-model/)).toBeVisible();
+    expect(screen.queryByRole("button", { name: /Check automatic submission/ })).toBeNull();
+    expect(screen.getByRole("button", { name: "Resume for later reviews" })).toBeDisabled();
+  });
+
+  it("keeps pending changes authoritative and reloads a conflict without optimistic restriction", async () => {
+    const user = mount({ autoSubmission: "human" });
+    await screen.findByLabelText(/GitHub review body/);
+    const gate = backend.hold("submission-override");
+    await user.click(row().getByRole("radio", { name: "Off" }));
+    await gate.entered;
+    expect(row().getByRole("radio", { name: "Inherit" })).toHaveAttribute("aria-checked", "true");
+    expect(row().getByRole("radio", { name: "Off" })).toBeDisabled();
+    backend.prs.find((pr) => pr.id === "pr-482")!.autoSubmissionOverride = {
+      mode: "allow",
+      version: 1,
+    };
+    gate.release();
+    await screen.findByText(
+      "SYNTHETIC: automatic submission override changed; reload before saving",
+    );
+    await waitFor(() =>
+      expect(row().getByRole("radio", { name: "On" })).toHaveAttribute("aria-checked", "true"),
+    );
+    expect(sourceState().evidence.every((item) => !item.acknowledgment)).toBe(true);
+  });
+});
+
 describe("source-versioned human override UI", () => {
   beforeEach(() => {
     window.location.hash = "#/pr/pr-482";
@@ -226,6 +395,7 @@ describe("source-versioned human override UI", () => {
   it("retains source-backed amber human evidence beside Ready while policy is off, without a mount scan", async () => {
     const user = mount({ autoSubmission: "off-hold" });
     await screen.findByLabelText(/GitHub review body/);
+    await user.click(screen.getByText("Details", { selector: "summary" }));
     const badges = screen.getAllByText("Human requested");
     expect(badges).toHaveLength(2);
     for (const badge of badges) {
@@ -263,6 +433,7 @@ describe("source-versioned human override UI", () => {
   it("shows nonblocking unavailable detection and incomplete coverage without fabricated evidence or check controls", async () => {
     const user = mount({ autoSubmission: "unavailable", editIntent: "locked" });
     await screen.findByLabelText(/GitHub review body/);
+    await user.click(screen.getByText("Details", { selector: "summary" }));
     expect(screen.getAllByText("Human-request detection unavailable")).toHaveLength(2);
     expect(screen.queryByText("Human requested")).toBeNull();
     expect(screen.queryByRole("link", { name: "Source on GitHub ↗" })).toBeNull();
@@ -293,6 +464,7 @@ describe("source-versioned human override UI", () => {
   it("acknowledges one exact source version, then explicitly resumes later runs without a clear check", async () => {
     const user = mount({ autoSubmission: "human" });
     await screen.findByLabelText(/GitHub review body/);
+    await user.click(screen.getByText("Details", { selector: "summary" }));
     const original = structuredClone(sourceState());
     const runs = backend.runs["pr-482"]!.length;
     const hold = structuredClone(backend.detail("pr-482").draft!.autoSubmission!.manualHold);
@@ -328,6 +500,7 @@ describe("source-versioned human override UI", () => {
   it("refreshes acknowledgment conflicts, preserving history and exposing changed evidence", async () => {
     const user = mount({ autoSubmission: "human" });
     await screen.findByLabelText(/GitHub review body/);
+    await user.click(screen.getByText("Details", { selector: "summary" }));
     const next = sourceState();
     next.version += 1;
     next.evidence.push({
@@ -346,6 +519,7 @@ describe("source-versioned human override UI", () => {
   it("never optimistically re-enables after a 409 and clears confirmation for the refreshed state", async () => {
     const user = mount({ autoSubmission: "human" });
     await screen.findByLabelText(/GitHub review body/);
+    await user.click(screen.getByText("Details", { selector: "summary" }));
     await user.click(screen.getByRole("button", { name: "Dismiss this evidence" }));
     await screen.findByText(/Retained as acknowledgment history/);
     await user.click(screen.getByRole("checkbox", { name: autoSubmissionReenableConfirmation }));

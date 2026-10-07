@@ -9,6 +9,7 @@ import type {
   ReviewDraft,
   Submission,
 } from "../../../shared/contracts";
+import { inheritAutoSubmissionOverride } from "../../../shared/contracts";
 import { api, RequestError } from "../api/client";
 import { useApp } from "../app-context";
 import { AskPanel, type AddTarget, type PanelView } from "../components/AskPanel";
@@ -18,7 +19,7 @@ import { parseDiff, resolveSelection } from "../lib/diff";
 import { resolveRowRange, type RowRange } from "../lib/selection";
 import { DraftEditor } from "../components/DraftEditor";
 import type { DraftEditing } from "../components/DraftEditGate";
-import { AutoSubmissionBadges, AutoSubmissionCard } from "../components/AutoSubmission";
+import { AutoSubmissionBadges, AutoSubmissionDetails } from "../components/AutoSubmission";
 import { ProposalCard, RevisionForm } from "../components/Proposals";
 import { ReviewControls } from "../components/ReviewControls";
 import { RunHistory } from "../components/RunHistory";
@@ -428,6 +429,7 @@ export function PrView({ id, listed }: { id: string; listed: PullRequest | undef
   };
 
   const pr = detail?.pr ?? listed;
+  const submissionOverride = pr?.autoSubmissionOverride ?? inheritAutoSubmissionOverride;
 
   const addTarget = (): AddTarget => {
     if (!panel || !pr) return { kind: "stale", message: "Select code in the diff first." };
@@ -994,17 +996,38 @@ export function PrView({ id, listed }: { id: string; listed: PullRequest | undef
           <section className="card" aria-labelledby="automation-h">
             <div className="card-head">
               <h2 id="automation-h">Automation</h2>
-              {Object.values(pr.automation).some((mode) => mode !== "inherit") ? (
+              {Object.values(pr.automation).some((mode) => mode !== "inherit") ||
+              submissionOverride.mode !== "inherit" ? (
                 <Pill tone="accent">Overridden</Pill>
               ) : (
                 <Pill plain>Inherits</Pill>
               )}
             </div>
-            <div className="card-body">
+            <div className="card-body stack">
               <AutomationOverridesCard
                 global={state.settings.automation}
                 overrides={pr.automation}
                 busy={busy !== null}
+                autoSubmission={{
+                  globalEnabled: state.settings.autoSubmission?.enabled ?? false,
+                  override: submissionOverride,
+                  state: pr.autoSubmission,
+                  onChange: (mode) =>
+                    void run(
+                      "submission-override",
+                      () =>
+                        api
+                          .updateAutoSubmissionOverride(id, {
+                            mode,
+                            expectedVersion: submissionOverride.version,
+                          })
+                          .catch(async (e: unknown) => {
+                            if (e instanceof RequestError && e.conflict) await load();
+                            throw e;
+                          }),
+                      "Automatic submission override updated for this pull request",
+                    ),
+                }}
                 onChange={(overrides) =>
                   void run(
                     "automation",
@@ -1013,9 +1036,9 @@ export function PrView({ id, listed }: { id: string; listed: PullRequest | undef
                   )
                 }
               />
+              <AutoSubmissionDetails key={id} pr={pr} onDetail={adopt} onRefresh={load} />
             </div>
           </section>
-          <AutoSubmissionCard key={id} pr={pr} onDetail={adopt} onRefresh={load} />
           {pr.body && <Description body={pr.body} />}
           {detail && detail.questions.length > 0 && (
             <QuestionsCard

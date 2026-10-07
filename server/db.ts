@@ -7,6 +7,7 @@ import {
 } from "./publication.js";
 import type {
   AutoSubmissionPolicy,
+  AutoSubmissionOverride,
   AutoSubmissionState,
   DiscussionSnapshot,
 } from "../shared/contracts.js";
@@ -111,6 +112,7 @@ interface PrRow {
   diff: string;
   diff_truncated: number;
   automation_json: string;
+  auto_submission_override_json: string;
   auto_commit_head: string | null;
   auto_requests_armed: number;
 }
@@ -513,6 +515,10 @@ export class AppDatabase {
       pr_id TEXT NOT NULL REFERENCES prs(id), head_sha TEXT NOT NULL, submission_id TEXT NOT NULL,
       PRIMARY KEY (pr_id, head_sha)
     );`);
+    if (!this.columns("prs").has("auto_submission_override_json"))
+      this.sqlite.exec(
+        `ALTER TABLE prs ADD COLUMN auto_submission_override_json TEXT NOT NULL DEFAULT '{"mode":"inherit","version":0}'`,
+      );
     if (!this.columns("runs").has("cancellation_json"))
       this.sqlite.exec("ALTER TABLE runs ADD COLUMN cancellation_json TEXT");
     if (!this.columns("meta").has("same_pass_submission")) {
@@ -1192,6 +1198,15 @@ export class AppDatabase {
     this.sqlite
       .prepare("UPDATE prs SET automation_json = ? WHERE id = ?")
       .run(json(overrides), prId);
+  }
+
+  setAutoSubmissionOverride(
+    prId: string,
+    override: AutoSubmissionOverride,
+  ): void {
+    this.sqlite
+      .prepare("UPDATE prs SET auto_submission_override_json = ? WHERE id = ?")
+      .run(json(override), prId);
   }
 
   getAutomationState(prId: string): AutomationState {
@@ -1944,6 +1959,9 @@ export class AppDatabase {
       hasReviewHistory: row.has_review_history === 1,
       mergeReadiness: readiness.get(row.id) ?? null,
       automation,
+      autoSubmissionOverride: parsed<AutoSubmissionOverride>(
+        row.auto_submission_override_json,
+      ),
       effectiveAutomation: effectiveAutomation(global, automation),
     };
   }

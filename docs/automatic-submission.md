@@ -12,6 +12,12 @@ In Settings > Automation, add exact PR-author GitHub usernames, select Comment /
 
 The app never relabels a generated verdict to fit consent. Every enabled Save requires fresh confirmation and invalidates prior publication provenance, including an unchanged Save. Off or removing an action revokes future authority after Save. Repository changes reset this policy to Off/empty and fence old PR generations; switching back cannot recover old consent.
 
+## Per-pull-request override
+
+The PR's Automation card includes Automatic submission with the same Inherit / On / Off control as the auto-review rows, a read-only global value and a link to Settings. Inherit follows the saved repository policy. Off records a durable manual-only restriction for this PR, including future commits and reviews, until explicitly changed. On removes only that preference restriction; it still needs enabled repository policy, existing author/action consent and every independent eligibility rule and hold. The effective line shows why publication remains unavailable. Changing this preference never publishes, queues a review, grants consent, acknowledges evidence or clears an edit/resume/uncertain-write hold.
+
+Collapsed Details on that Automation card retains the full automatic-submission status, state/version/generation, hold explanation, every stored evidence version with Resolve/Dismiss, same-pass detection and historical classifier check. Existing repeated records remain history; neither a preference change nor newer detection deletes them. The existing evidence-driven Resume for later reviews still requires every stored evidence acknowledgment.
+
 ## Which drafts qualify
 
 Only successful full reviews automatically queued **after** saved consent qualify. The immutable enqueue capture names repository, policy version/time, author/actions, PR generation and output contract 1.1. Publication requires the latest untouched version-1 draft on the latest open head, identical to its immutable result. Manual reviews, local drafts, AI revisions, historical or pre-rollout reviews, queued/in-flight pre-rollout jobs and saved or unsaved edits stay manual. No detection availability or clear certificate is required.

@@ -28,14 +28,17 @@ function Shell({ mock }: { mock: boolean }) {
   const [oauthReturn, setOAuthReturn] = useState<OAuthReturn | null>(null);
   const redeemed = useRef(false);
   const mounted = useRef(false);
+  const refreshSeq = useRef(0);
   const { route, navigate } = useRoute();
   const onSettings = useRef(route.name === "settings");
   onSettings.current = route.name === "settings";
   const toast = useToast();
 
   const refresh = useCallback(async () => {
+    const seq = ++refreshSeq.current;
     try {
       const next = await api.state();
+      if (seq !== refreshSeq.current) return;
       setState((current) =>
         current?.prs.some((pr) => {
           const incoming = next.prs.find((item) => item.id === pr.id);
@@ -46,6 +49,7 @@ function Shell({ mock }: { mock: boolean }) {
       );
       setError(null);
     } catch (e) {
+      if (seq !== refreshSeq.current) return;
       setError(
         e instanceof RequestError ? e.message : "Cannot reach the local backend on port 4317",
       );

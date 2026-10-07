@@ -9,6 +9,7 @@ import {
   type AutoSubmissionUpdate,
   type AutoSubmissionState,
   type AutoSubmissionReenable,
+  type AutoSubmissionOverrideUpdate,
   type HumanReviewAcknowledgment,
   type AutomaticReviewProvenance,
   type DiscussionSnapshot,
@@ -1362,6 +1363,25 @@ export class ReviewService {
     return this.getDetail(prId);
   }
 
+  updateAutoSubmissionOverride(
+    prId: string,
+    update: AutoSubmissionOverrideUpdate,
+  ): PullRequestDetail {
+    const pr = this.requirePr(prId);
+    if (pr.autoSubmissionOverride!.version !== update.expectedVersion)
+      throw new ServiceError(
+        409,
+        "auto_submission_conflict",
+        "Automatic submission override changed; reload before saving",
+      );
+    this.db.setAutoSubmissionOverride(prId, {
+      mode: update.mode,
+      version: update.expectedVersion + 1,
+    });
+    this.emit(prId);
+    return this.getDetail(prId);
+  }
+
   async reenableAutoSubmission(
     prId: string,
     request: AutoSubmissionReenable,
@@ -1479,6 +1499,12 @@ export class ReviewService {
         status: "held",
         message:
           "Automatic publication is paused; resolve any evidence and explicitly re-enable for future reviews",
+      };
+    if (pr.autoSubmissionOverride?.mode === "restrict")
+      return {
+        status: "manual_only",
+        message:
+          "Manual-only for this pull request (automatic submission override)",
       };
     if (
       !policy.enabled ||

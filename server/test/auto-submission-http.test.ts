@@ -13,6 +13,90 @@ import {
   publicationFixture,
 } from "./fixtures/auto-submission.js";
 
+test("HTTP PR override setter fences conflicts and leaves evidence, resume and cached reads independent", async () => {
+  const f = await publicationFixture();
+  const server = createHttpServer(f.service, f.config);
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/prs/${encodeURIComponent(PR)}`;
+  const request = (suffix: string, body: unknown) =>
+    fetch(`${base}${suffix}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  try {
+    for (const body of [
+      { mode: "off", expectedVersion: 0 },
+      { mode: "restrict", expectedVersion: -1 },
+      { mode: "restrict", expectedVersion: 0, consent: true },
+    ])
+      assert.equal(
+        (await request("/auto-submission/override", body)).status,
+        400,
+      );
+    const restricted = await request("/auto-submission/override", {
+      mode: "restrict",
+      expectedVersion: 0,
+    });
+    assert.equal(restricted.status, 200);
+    assert.deepEqual(
+      ((await restricted.json()) as PullRequestDetail).pr
+        .autoSubmissionOverride,
+      { mode: "restrict", version: 1 },
+    );
+    const stale = await request("/auto-submission/override", {
+      mode: "allow",
+      expectedVersion: 0,
+    });
+    assert.equal(stale.status, 409);
+    assert.equal((await stale.json()).code, "auto_submission_conflict");
+    f.github.sources = [fixtureSource()];
+    f.reviewer.decisions.set("synthetic-comment", "requested");
+    await f.manualReview();
+    const stored = structuredClone(f.service.db.getPublicationState(PR));
+    for (const [index, mode] of (
+      ["allow", "inherit", "restrict"] as const
+    ).entries()) {
+      assert.equal(
+        (
+          await request("/auto-submission/override", {
+            mode,
+            expectedVersion: index + 1,
+          })
+        ).status,
+        200,
+      );
+      const detail = (await (await fetch(base)).json()) as PullRequestDetail;
+      assert.deepEqual(detail.pr.autoSubmissionOverride, {
+        mode,
+        version: index + 2,
+      });
+      assert.equal(detail.pr.autoSubmission?.status, "human_review_requested");
+      assert.deepEqual(f.service.db.getPublicationState(PR), stored);
+      const resume = await request("/auto-submission/re-enable", {
+        expectedVersion: stored.version,
+        confirmation: autoSubmissionReenableConfirmation,
+      });
+      assert.equal(resume.status, 409);
+      assert.deepEqual(await resume.json(), {
+        code: "auto_submission_held",
+        error: "Every stored human-review request requires an acknowledgment",
+      });
+    }
+    const calls = f.reviewer.calls;
+    await fetch(base);
+    await fetch(base.replace(/\/prs\/.*/, "/state"));
+    assert.equal(f.reviewer.calls, calls);
+    assert.equal(f.github.writes.length, 0);
+    assert.equal(f.service.getState().settings.autoSubmission?.enabled, false);
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+    await f.close();
+  }
+});
+
 test("a confirmed automatically submitted draft can be edited, saved, reloaded and previewed without rewriting its submission", async () => {
   const f = await publicationFixture();
   const server = createHttpServer(f.service, f.config);

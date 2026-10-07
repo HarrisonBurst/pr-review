@@ -6,6 +6,8 @@ import {
   autoSubmissionReenableConfirmation,
   normalizeAutoSubmissionAuthors,
   type AutoSubmissionUpdate,
+  type AutoSubmissionOverrideUpdate,
+  inheritAutoSubmissionOverride,
   type DraftEditIntent,
   type HumanReviewAcknowledgment,
   type AutoSubmissionReenable,
@@ -424,6 +426,7 @@ export class MockBackend {
   autoSubmissionBodies: AutoSubmissionUpdate[] = [];
   humanAcknowledgments: HumanReviewAcknowledgment[] = [];
   autoReenableBodies: AutoSubmissionReenable[] = [];
+  autoSubmissionOverrideBodies: AutoSubmissionOverrideUpdate[] = [];
   autoCheckCalls = 0;
   modelDiscoveryCalls: HarnessId[] = [];
   oauthStates: Record<string, MockOAuthState> = {};
@@ -2133,7 +2136,7 @@ export class MockBackend {
     return () => this.listeners.delete(listener);
   }
 
-  hold(scope: "sync" | "edit-intent" | "review-cancel" | number): MockHold {
+  hold(scope: "sync" | "edit-intent" | "review-cancel" | "submission-override" | number): MockHold {
     let enter!: () => void;
     let resolve!: () => void;
     let reject!: (error: Error) => void;
@@ -2260,7 +2263,19 @@ export class MockBackend {
   }
 
   detail(id: string): PullRequestDetail {
-    const pr = this.pr(id);
+    const pr = structuredClone(this.pr(id));
+    pr.autoSubmissionOverride ??= { ...inheritAutoSubmissionOverride };
+    if (pr.autoSubmissionOverride.mode === "restrict") {
+      const state = (pr.autoSubmission ??= fixtures.autoSubmissionState("unavailable", pr.headSha));
+      if (
+        !state.evidence.some((item) => !item.acknowledgment) &&
+        !state.reenableRequired &&
+        !["failed", "uncertain", "held"].includes(state.status)
+      ) {
+        state.status = "manual_only";
+        state.message = "Manual-only for this pull request (automatic submission override)";
+      }
+    }
     return structuredClone({
       pr,
       diff: fixtures.diff,
@@ -2273,6 +2288,22 @@ export class MockBackend {
       freshness: this.freshness[id] ?? null,
       questions: this.questions[id] ?? [],
     });
+  }
+
+  async updateAutoSubmissionOverride(id: string, body: AutoSubmissionOverrideUpdate) {
+    this.autoSubmissionOverrideBodies.push(structuredClone(body));
+    await this.held("submission-override");
+    const pr = this.pr(id);
+    const current = pr.autoSubmissionOverride ?? inheritAutoSubmissionOverride;
+    if (current.version !== body.expectedVersion)
+      throw new MockError(
+        409,
+        "SYNTHETIC: automatic submission override changed; reload before saving",
+        "auto_submission_conflict",
+      );
+    pr.autoSubmissionOverride = { mode: body.mode, version: current.version + 1 };
+    this.emit(id);
+    return this.detail(id);
   }
 
   updateAutoSubmission(body: AutoSubmissionUpdate) {
@@ -3398,6 +3429,7 @@ export class MockBackend {
           throw new MockError(404, "Independent classifier checks are retired", "not_found");
         if (sub === "reconcile") return this.reconcileAutoSubmission(id);
         if (sub === "acknowledge") return this.acknowledgeHumanReview(id, b);
+        if (sub === "override") return this.updateAutoSubmissionOverride(id, b);
         if (sub === "re-enable") return this.reenableAutoSubmission(id, b);
       }
       if (action === "draft" && !sub && method === "PUT") return this.saveDraft(id, b);
