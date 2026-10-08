@@ -1,5 +1,10 @@
 import { useEffect, useState } from "react";
-import type { Finding, Submission, SubmissionPreview } from "../../../shared/contracts";
+import type {
+  Finding,
+  Submission,
+  SubmissionPreview,
+  SubmissionStep,
+} from "../../../shared/contracts";
 import { api, RequestError } from "../api/client";
 import { shortSha, verdictLabel } from "../lib/format";
 import { Markdown } from "./Markdown";
@@ -7,10 +12,26 @@ import { Modal, Notice, SeverityPill, Spinner, SubmissionPill } from "./ui";
 
 type Phase =
   | { kind: "loading" }
-  | { kind: "error"; operation: "preview" | "submission"; message: string; conflict: boolean }
+  | {
+      kind: "error";
+      operation: "preview" | "submission";
+      message: string;
+      conflict: boolean;
+      uncertain: boolean;
+    }
   | { kind: "ready"; preview: SubmissionPreview }
   | { kind: "submitting"; preview: SubmissionPreview }
   | { kind: "done"; submission: Submission };
+
+const stepLabel: Record<SubmissionStep, string> = {
+  refreshing_pr: "Refreshing PR head and diff from GitHub",
+  checking_readiness: "Checking GitHub merge readiness",
+  checking_discussion: "Checking review discussion context",
+  building_payload: "Building exact review payload from the current diff",
+  checking_head: "Checking current PR state and head",
+  reading_baseline: "Reading fresh GitHub review baseline",
+  sending_review: "Sending confirmed review to GitHub",
+};
 
 export function SubmitModal({
   prId,
@@ -30,11 +51,14 @@ export function SubmitModal({
   onBackToInbox: () => void;
 }) {
   const [phase, setPhase] = useState<Phase>({ kind: "loading" });
+  const [step, setStep] = useState("Connecting to local preview checks");
 
   useEffect(() => {
     let cancelled = false;
     api
-      .preview(prId, draftId, draftVersion)
+      .preview(prId, draftId, draftVersion, (next) => {
+        if (!cancelled) setStep(stepLabel[next]);
+      })
       .then((preview) => !cancelled && setPhase({ kind: "ready", preview }))
       .catch((e: unknown) => {
         if (cancelled) return;
@@ -44,6 +68,7 @@ export function SubmitModal({
           operation: "preview",
           message: err?.message ?? String(e),
           conflict: err?.conflict ?? false,
+          uncertain: false,
         });
       });
     return () => {
@@ -53,9 +78,12 @@ export function SubmitModal({
 
   const submit = async () => {
     if (phase.kind !== "ready") return;
+    setStep("Connecting to local submission checks");
     setPhase({ kind: "submitting", preview: phase.preview });
     try {
-      const submission = await api.submit(prId, phase.preview.id);
+      const submission = await api.submit(prId, phase.preview.id, (next) =>
+        setStep(stepLabel[next]),
+      );
       setPhase({ kind: "done", submission });
       onSubmitted(submission);
     } catch (e) {
@@ -65,6 +93,7 @@ export function SubmitModal({
         operation: "submission",
         message: err?.message ?? String(e),
         conflict: err?.conflict ?? false,
+        uncertain: err?.code === "submission_ambiguous",
       });
     }
   };
@@ -115,20 +144,24 @@ export function SubmitModal({
         )
       }
     >
-      {phase.kind === "loading" && <Spinner label="Refreshing PR head and building the payload" />}
+      {(phase.kind === "loading" || phase.kind === "submitting") && <Spinner label={step} />}
       {phase.kind === "error" && (
         <Notice
           tone="danger"
           title={
-            phase.conflict
-              ? "Cannot submit this draft."
-              : phase.operation === "submission"
-                ? "Submission failed."
-                : "Preview failed."
+            phase.uncertain
+              ? "Submission outcome uncertain."
+              : phase.conflict
+                ? "Cannot submit this draft."
+                : phase.operation === "submission"
+                  ? "Submission failed."
+                  : "Preview failed."
           }
         >
           {phase.message}
-          {phase.conflict && " Close this dialog, reload the draft, and try again."}
+          {phase.uncertain
+            ? " Do not retry until the GitHub review and local submission have been reconciled."
+            : phase.conflict && " Close this dialog, reload the draft, and try again."}
         </Notice>
       )}
       {preview && <PayloadView preview={preview} findings={findings} />}

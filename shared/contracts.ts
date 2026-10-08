@@ -1371,6 +1371,20 @@ export interface ReviewPayload {
   comments: ReviewComment[];
 }
 
+export type SubmissionStep =
+  | "refreshing_pr"
+  | "checking_readiness"
+  | "checking_discussion"
+  | "building_payload"
+  | "checking_head"
+  | "reading_baseline"
+  | "sending_review";
+
+export type SubmissionProgress<T> =
+  | { type: "step"; step: SubmissionStep }
+  | { type: "result"; value: T }
+  | { type: "error"; status: number; error: string; code: string };
+
 export interface SubmissionPreview {
   authority?: SubmissionAuthority;
   id: string;

@@ -54,6 +54,7 @@ import {
   type SettingsUpdate,
   type Submission,
   type SubmissionPreview,
+  type SubmissionStep,
 } from "../shared/contracts.js";
 import {
   DemoGithubAdapter,
@@ -2829,6 +2830,7 @@ export class ReviewService {
     prId: string,
     draftId: string,
     draftVersion: number,
+    progress?: (step: SubmissionStep) => void,
   ): Promise<SubmissionPreview> {
     const pr = this.requirePr(prId);
     const draft = this.requireDraft(prId, draftId);
@@ -2838,7 +2840,8 @@ export class ReviewService {
         "draft_conflict",
         "draft changed since it was loaded",
       );
-    const remote = await this.refreshRemote(pr);
+    progress?.("refreshing_pr");
+    const remote = await this.refreshRemote(pr, true, progress);
     if (remote.pr.state !== "OPEN")
       throw new ServiceError(
         409,
@@ -2859,6 +2862,7 @@ export class ReviewService {
         "draft_conflict",
         "draft changed during preview refresh",
       );
+    progress?.("building_payload");
     return this.createPreview(current, latest, remote.diff);
   }
 
@@ -2904,7 +2908,11 @@ export class ReviewService {
     return result;
   }
 
-  async submit(prId: string, previewId: string): Promise<PullRequestDetail> {
+  async submit(
+    prId: string,
+    previewId: string,
+    progress?: (step: SubmissionStep) => void,
+  ): Promise<PullRequestDetail> {
     const pr = this.requirePr(prId);
     const preview = this.db.getPreview(previewId);
     if (!preview || preview.prId !== prId)
@@ -2961,10 +2969,15 @@ export class ReviewService {
         "draft_conflict",
         "preview does not match the current draft",
       );
-    const remote = await this.refreshRemote(pr);
+    progress?.("checking_head");
+    const remote = this.github.getSubmissionHead
+      ? await this.github.getSubmissionHead(pr)
+      : (await this.readPullRequest(pr.repository, pr.number)).pr;
     const current = this.requirePr(prId);
     if (
-      remote.pr.state !== "OPEN" ||
+      remote.state !== "OPEN" ||
+      current.state !== "OPEN" ||
+      remote.headSha !== preview.payload.commit_id ||
       draft.headSha !== current.headSha ||
       preview.payload.commit_id !== current.headSha
     )
@@ -2973,6 +2986,7 @@ export class ReviewService {
         "stale_draft",
         "preview is outdated and must be regenerated",
       );
+    if (this.github.reviewInventory) progress?.("reading_baseline");
     const inventory = this.github.reviewInventory
       ? await this.github.reviewInventory(current)
       : null;
@@ -3027,6 +3041,7 @@ export class ReviewService {
       this.db.createSubmission(submission, prId);
     });
     this.emit(prId);
+    progress?.("sending_review");
     try {
       const result = await this.github.submitReview(current, preview.payload);
       this.db.updateSubmission({
@@ -3976,14 +3991,17 @@ export class ReviewService {
   private async refreshRemote(
     pr: PullRequest,
     automatic = true,
+    progress?: (step: SubmissionStep) => void,
   ): Promise<RemotePullRequest> {
     const remote = await this.readPullRequest(pr.repository, pr.number);
     this.observe(remote, { requestsKnown: false, automatic }, pr.id);
+    if (remote.pr.state === "OPEN") progress?.("checking_readiness");
     await this.recordMergeReadiness(pr.id);
     if (
       automaticallyReviewed(this.requirePr(pr.id)) ||
       this.db.getPublicationState(pr.id).detection
     ) {
+      progress?.("checking_discussion");
       await this.refreshHumanDetection(this.requirePr(pr.id));
       const diff = this.db.getDiff(pr.id)!;
       return {

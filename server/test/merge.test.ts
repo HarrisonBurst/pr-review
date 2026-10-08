@@ -540,6 +540,52 @@ test("the CLI adapter asks GraphQL for the exact pull request and maps the answe
   }
 });
 
+test("submission head uses a bounded GraphQL read and rejects incomplete answers", async () => {
+  const gh = await makeFakeGh();
+  try {
+    const pr = pullRequest();
+    await gh.respond({
+      graphql: {
+        stdout: JSON.stringify({
+          data: {
+            repository: {
+              pullRequest: { state: "OPEN", headRefOid: pr.headSha },
+            },
+          },
+        }),
+      },
+    });
+    assert.deepEqual(await new GithubCliAdapter().getSubmissionHead(pr), {
+      headSha: pr.headSha,
+      state: "OPEN",
+    });
+    const [call] = await gh.calls();
+    assert.equal(call![1], "graphql");
+    assert.match(call!.join(" "), /headRefOid/);
+    assert.ok(call!.includes("owner=owner"));
+    assert.ok(call!.includes("name=repo"));
+    assert.ok(call!.includes("number=7"));
+    await gh.respond({
+      graphql: {
+        stdout: JSON.stringify({
+          data: {
+            repository: {
+              pullRequest: { state: "OPEN", headRefOid: pr.headSha },
+            },
+          },
+          errors: [{ message: "partial" }],
+        }),
+      },
+    });
+    await assert.rejects(
+      new GithubCliAdapter().getSubmissionHead(pr),
+      /submission head unavailable/,
+    );
+  } finally {
+    await gh.cleanup();
+  }
+});
+
 test("the CLI adapter reports GitHub failures instead of inventing a state", async () => {
   const gh = await makeFakeGh();
   try {

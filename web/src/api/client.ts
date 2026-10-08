@@ -41,6 +41,8 @@ import type {
   IntegrationCatalog,
   Submission,
   SubmissionPreview,
+  SubmissionProgress,
+  SubmissionStep,
 } from "../../../shared/contracts";
 
 export class RequestError extends Error {
@@ -57,6 +59,16 @@ export class RequestError extends Error {
   }
 }
 
+async function readJson<T>(response: Response): Promise<T> {
+  const text = await response.text();
+  const data = text ? (JSON.parse(text) as unknown) : null;
+  if (!response.ok) {
+    const error = (data ?? {}) as Partial<ApiError>;
+    throw new RequestError(response.status, error.error ?? response.statusText, error.code);
+  }
+  return data as T;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     ...init,
@@ -66,13 +78,73 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       ...init?.headers,
     },
   });
-  const text = await response.text();
-  const data = text ? (JSON.parse(text) as unknown) : null;
-  if (!response.ok) {
-    const error = (data ?? {}) as Partial<ApiError>;
-    throw new RequestError(response.status, error.error ?? response.statusText, error.code);
+  return readJson<T>(response);
+}
+
+async function submissionRequest<T>(
+  path: string,
+  body: unknown,
+  onStep: (step: SubmissionStep) => void,
+): Promise<T> {
+  let response: Response;
+  try {
+    response = await fetch(path, {
+      ...json(body),
+      headers: { Accept: "application/x-ndjson", "Content-Type": "application/json" },
+    });
+  } catch {
+    throw new RequestError(
+      503,
+      path.endsWith("/submit")
+        ? "Submission connection lost. Check GitHub and local submissions before trying again."
+        : "Preview connection lost. No confirmation was sent.",
+      path.endsWith("/submit") ? "submission_ambiguous" : undefined,
+    );
   }
-  return data as T;
+  if (!response.headers.get("content-type")?.includes("application/x-ndjson"))
+    return readJson<T>(response);
+  const reader = response.body!.getReader();
+  const decoder = new TextDecoder();
+  let pending = "";
+  let result: T | undefined;
+  const consume = (line: string) => {
+    const event = JSON.parse(line) as SubmissionProgress<T>;
+    if (event.type === "step") onStep(event.step);
+    if (event.type === "result") result = event.value;
+    if (event.type === "error") throw new RequestError(event.status, event.error, event.code);
+  };
+  while (true) {
+    let chunk: ReadableStreamReadResult<Uint8Array>;
+    try {
+      chunk = await reader.read();
+    } catch {
+      throw new RequestError(
+        503,
+        path.endsWith("/submit")
+          ? "Submission connection lost. Check GitHub and local submissions before trying again."
+          : "Preview connection lost. No confirmation was sent.",
+        path.endsWith("/submit") ? "submission_ambiguous" : undefined,
+      );
+    }
+    const { value, done } = chunk;
+    if (done) break;
+    pending += decoder.decode(value, { stream: true });
+    let end: number;
+    while ((end = pending.indexOf("\n")) !== -1) {
+      consume(pending.slice(0, end));
+      pending = pending.slice(end + 1);
+    }
+  }
+  if (pending.trim()) consume(pending);
+  if (result === undefined)
+    throw new RequestError(
+      503,
+      path.endsWith("/submit")
+        ? "Submission connection ended without confirmation. Check GitHub and local submissions before trying again."
+        : "Preview connection ended without a payload. No confirmation was sent.",
+      path.endsWith("/submit") ? "submission_ambiguous" : undefined,
+    );
+  return result;
 }
 
 const json = (body: unknown): RequestInit => ({ method: "POST", body: JSON.stringify(body) });
@@ -213,10 +285,19 @@ export const api = {
       `${prPath(id)}/proposals/${encodeURIComponent(proposalId)}/reject`,
       json({}),
     ),
-  preview: (id: string, draftId: string, draftVersion: number) =>
-    request<SubmissionPreview>(`${prPath(id)}/preview`, json({ draftId, draftVersion })),
-  submit: (id: string, previewId: string) =>
-    request<Submission>(`${prPath(id)}/submit`, json({ previewId })),
+  preview: (
+    id: string,
+    draftId: string,
+    draftVersion: number,
+    onStep: (step: SubmissionStep) => void = () => {},
+  ) =>
+    submissionRequest<SubmissionPreview>(
+      `${prPath(id)}/preview`,
+      { draftId, draftVersion },
+      onStep,
+    ),
+  submit: (id: string, previewId: string, onStep: (step: SubmissionStep) => void = () => {}) =>
+    submissionRequest<Submission>(`${prPath(id)}/submit`, { previewId }, onStep),
 };
 
 export type Api = typeof api;

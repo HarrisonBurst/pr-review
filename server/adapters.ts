@@ -79,6 +79,9 @@ export interface GithubAdapter {
   readonly demo: boolean;
   discussion?(pr: PullRequest): Promise<DiscussionSnapshot>;
   reviewInventory?(pr: PullRequest): Promise<ReviewInventory>;
+  getSubmissionHead?(
+    pr: PullRequest,
+  ): Promise<Pick<PullRequest, "headSha" | "state">>;
   health(): Promise<{ user: string | null; message: string }>;
   getPullRequest(
     repository: string,
@@ -690,6 +693,43 @@ export class GithubCliAdapter implements GithubAdapter {
     return acquireReviewInventory((args) => this.gh(args), pr);
   }
 
+  async getSubmissionHead(
+    pr: PullRequest,
+  ): Promise<Pick<PullRequest, "headSha" | "state">> {
+    const { owner, name } = repositoryParts(pr.repository);
+    const response = parseJson<{
+      data?: {
+        repository?: {
+          pullRequest?: { state: PullRequest["state"]; headRefOid: string };
+        };
+      };
+      errors?: unknown[];
+    }>(
+      await this.gh([
+        "api",
+        "graphql",
+        "-f",
+        "query=query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){state headRefOid}}}",
+        "-F",
+        `owner=${owner}`,
+        "-F",
+        `name=${name}`,
+        "-F",
+        `number=${pr.number}`,
+      ]),
+      "submission head",
+    );
+    const result = response.data?.repository?.pullRequest;
+    if (
+      response.errors?.length ||
+      !result ||
+      !shaPattern.test(result.headRefOid) ||
+      !["OPEN", "CLOSED", "MERGED"].includes(result.state)
+    )
+      throw new GithubRequestError("submission head unavailable", null);
+    return { headSha: result.headRefOid, state: result.state };
+  }
+
   async submitReview(
     pr: PullRequest,
     payload: ReviewPayload,
@@ -1015,7 +1055,10 @@ export class DemoGithubAdapter implements GithubAdapter {
     return { status: "identical", commits: [], truncated: false };
   }
 
-  async submitReview(): Promise<ReviewSubmissionResult> {
+  async submitReview(
+    _pr: PullRequest,
+    _payload: ReviewPayload,
+  ): Promise<ReviewSubmissionResult> {
     return {
       githubReviewId: "demo-review-1",
       url: "https://example.invalid/pr-review-demo/review-1",

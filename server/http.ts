@@ -22,6 +22,8 @@ import {
   type QuestionRequest,
   type RevisionRequest,
   type SettingsUpdate,
+  type SubmissionProgress,
+  type SubmissionStep,
 } from "../shared/contracts.js";
 import { AppConfig } from "./config.js";
 import { ReviewService, ServiceError } from "./service.js";
@@ -46,29 +48,47 @@ function sendJson(
   response.end(body);
 }
 
-function sendError(response: ServerResponse, error: unknown): void {
-  if (error instanceof OAuthCallbackError || error instanceof OAuthScopeError) {
-    sendJson(response, 409, { error: error.message, code: error.code });
-    return;
-  }
-  if (error instanceof CredentialStoreError) {
-    sendJson(response, 409, {
+function errorResponse(error: unknown) {
+  if (error instanceof OAuthCallbackError || error instanceof OAuthScopeError)
+    return { status: 409, error: error.message, code: error.code };
+  if (error instanceof CredentialStoreError)
+    return {
+      status: 409,
       error: error.message,
       code: `credential_store_${error.status}`,
-    });
-    return;
-  }
-  if (error instanceof ServiceError) {
-    sendJson(response, error.status, {
-      error: error.message,
-      code: error.code,
-    });
-    return;
-  }
-  sendJson(response, 500, {
+    };
+  if (error instanceof ServiceError)
+    return { status: error.status, error: error.message, code: error.code };
+  return {
+    status: 500,
     error: error instanceof Error ? error.message : String(error),
     code: "internal_error",
+  };
+}
+
+function sendError(response: ServerResponse, error: unknown): void {
+  const { status, ...body } = errorResponse(error);
+  sendJson(response, status, body);
+}
+
+async function sendProgress<T>(
+  response: ServerResponse,
+  action: (progress: (step: SubmissionStep) => void) => Promise<T>,
+): Promise<void> {
+  response.writeHead(200, {
+    "content-type": "application/x-ndjson; charset=utf-8",
+    "cache-control": "no-store",
+    "x-content-type-options": "nosniff",
   });
+  const send = (event: SubmissionProgress<T>) =>
+    response.write(`${JSON.stringify(event)}\n`);
+  try {
+    const value = await action((step) => send({ type: "step", step }));
+    send({ type: "result", value });
+  } catch (error) {
+    send({ type: "error", ...errorResponse(error) });
+  }
+  response.end();
 }
 
 async function readBody(request: IncomingMessage): Promise<unknown> {
@@ -1430,15 +1450,18 @@ export function createHttpServer(
             parts[2] === "preview"
           ) {
             const body = bodyObject(await readBody(request));
-            sendJson(
-              response,
-              200,
-              await service.preview(
-                prId,
-                stringBody(body, "draftId"),
-                positiveInteger(body, "draftVersion"),
-              ),
-            );
+            const draftId = stringBody(body, "draftId");
+            const draftVersion = positiveInteger(body, "draftVersion");
+            if (request.headers.accept?.includes("application/x-ndjson"))
+              await sendProgress(response, (progress) =>
+                service.preview(prId, draftId, draftVersion, progress),
+              );
+            else
+              sendJson(
+                response,
+                200,
+                await service.preview(prId, draftId, draftVersion),
+              );
             return;
           }
           if (
@@ -1448,14 +1471,17 @@ export function createHttpServer(
           ) {
             const body = bodyObject(await readBody(request));
             const previewId = stringBody(body, "previewId");
-            const detail = await service.submit(prId, previewId);
-            sendJson(
-              response,
-              200,
-              detail.submissions.find(
+            const submit = async (
+              progress?: (step: SubmissionStep) => void,
+            ) => {
+              const detail = await service.submit(prId, previewId, progress);
+              return detail.submissions.find(
                 (submission) => submission.previewId === previewId,
-              )!,
-            );
+              )!;
+            };
+            if (request.headers.accept?.includes("application/x-ndjson"))
+              await sendProgress(response, submit);
+            else sendJson(response, 200, await submit());
             return;
           }
         }
