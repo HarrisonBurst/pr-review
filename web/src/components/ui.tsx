@@ -94,7 +94,6 @@ export function ViewerApprovalPill({ pr }: { pr: PullRequest }) {
       title={current ? "Approved by you" : "Approved by you at an earlier revision"}
     >
       <Pill tone="ok">Approved by you</Pill>
-      {!current && <Pill tone="warn">Earlier approval</Pill>}
     </span>
   );
 }
