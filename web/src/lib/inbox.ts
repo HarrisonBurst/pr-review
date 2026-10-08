@@ -42,11 +42,10 @@ export function settled(pr: PullRequest): boolean {
 }
 
 function rank(pr: PullRequest): number {
+  if (settled(pr)) return 2;
   const approval = pr.viewerApproval;
-  if (approval?.commitSha && approval.headSha === pr.headSha && approval.commitSha === pr.headSha)
-    return 3;
-  if (pr.status === "ready") return 0;
-  return settled(pr) ? 2 : 1;
+  if (approval?.commitSha && approval.headSha === pr.headSha) return 3;
+  return pr.status === "ready" ? 0 : 1;
 }
 
 export function compareInbox(a: PullRequest, b: PullRequest): number {

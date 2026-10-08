@@ -128,14 +128,15 @@ for (const [group, source] of [
 ] as const)
   it(`sorts current approval below submitted in ${group} without changing membership or filters`, async () => {
     const backend = new MockBackend({ reviewDelayMs: 0 });
-    const ids = ["pr-482", "pr-468", "pr-455", "pr-490", "pr-471"];
+    const ids = ["pr-482", "pr-468", "pr-455", "pr-490", "pr-471", "pr-479"];
     backend.prs = ids.map((id, index) => {
       const pr = backend.prs.find((item) => item.id === id)!;
       const current = id === "pr-482" || id === "pr-471";
-      const earlier = id === "pr-468";
+      const earlier = id === "pr-468" || id === "pr-471";
+      const superseded = id === "pr-479";
       pr.status =
         id === "pr-490" ? "unreviewed" : id === "pr-455" || id === "pr-471" ? "submitted" : "ready";
-      pr.title = `SYNTHETIC ${current ? "current viewer approval" : earlier ? "earlier viewer approval" : pr.status} ${id}`;
+      pr.title = `SYNTHETIC ${superseded ? "superseded earlier-only approval" : earlier ? "viewer approval at an earlier commit" : current ? "viewer approval at the current commit" : pr.status} ${id}`;
       pr.requested = source !== null && !current;
       pr.requestSource = pr.requested ? source : null;
       pr.historicalRequestSource = source;
@@ -146,7 +147,7 @@ for (const [group, source] of [
           ? {
               viewerLogin: "demo-user",
               headSha: pr.headSha,
-              commitSha: current ? pr.headSha : "earlier-head",
+              commitSha: earlier ? "earlier-head" : pr.headSha,
             }
           : null;
       return pr;
@@ -166,24 +167,26 @@ for (const [group, source] of [
     const rows = () => within(screen.getByRole("list", { name: group })).getAllByRole("listitem");
     const order = () => rows().map((row) => row.querySelector("a.title")!.getAttribute("href"));
     const hrefs = (ids: string[]) => ids.map((id) => `#/pr/${id}`);
-    expect(order()).toEqual(hrefs(["pr-468", "pr-490", "pr-455", "pr-482", "pr-471"]));
-    expect(screen.getAllByRole("listitem")).toHaveLength(5);
-    expect(screen.getByText(group).closest("summary")).toHaveTextContent("5");
-    expect(within(rows()[0]!).getByText("Earlier approval")).toBeInTheDocument();
-    expect(within(rows()[3]!).getByText("Ready")).toBeInTheDocument();
-    expect(within(rows()[4]!).getByText("Submitted")).toBeInTheDocument();
+    expect(order()).toEqual(hrefs(["pr-479", "pr-490", "pr-455", "pr-471", "pr-482", "pr-468"]));
+    expect(screen.getAllByRole("listitem")).toHaveLength(6);
+    expect(screen.getByText(group).closest("summary")).toHaveTextContent("6");
+    expect(within(rows()[0]!).queryByText("Approved by you")).not.toBeInTheDocument();
+    expect(within(rows()[3]!).getByText("Submitted")).toBeInTheDocument();
+    expect(within(rows()[4]!).getByText("Ready")).toBeInTheDocument();
+    expect(within(rows()[5]!).getByText("Earlier approval")).toBeInTheDocument();
+    expect(within(rows()[5]!).getByText("Ready")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /^Submitted/ }));
     expect(order()).toEqual(hrefs(["pr-455", "pr-471"]));
-    expect(screen.getByText(group).closest("summary")).toHaveTextContent("2 of 5");
+    expect(screen.getByText(group).closest("summary")).toHaveTextContent("2 of 6");
     await user.click(screen.getByRole("button", { name: /^Ready/ }));
-    expect(order()).toEqual(hrefs(["pr-468", "pr-482"]));
+    expect(order()).toEqual(hrefs(["pr-479", "pr-482", "pr-468"]));
     await user.click(screen.getByRole("button", { name: /^Needs attention/ }));
-    expect(order()).toEqual(hrefs(["pr-468", "pr-482"]));
+    expect(order()).toEqual(hrefs(["pr-479", "pr-482", "pr-468"]));
     await user.click(screen.getByRole("button", { name: /^Unreviewed/ }));
     expect(order()).toEqual(hrefs(["pr-490"]));
     await user.click(screen.getByRole("button", { name: /^All/ }));
     await user.type(screen.getByRole("searchbox"), "viewer");
-    expect(order()).toEqual(hrefs(["pr-468", "pr-482", "pr-471"]));
+    expect(order()).toEqual(hrefs(["pr-471", "pr-482", "pr-468"]));
     await user.clear(screen.getByRole("searchbox"));
     const projected = backend.state().prs;
     for (const pr of original.prs) {
