@@ -136,6 +136,27 @@ export class ClaudeStream {
   resultFrames = 0;
   toolCalls = 0;
 
+  finalEnvelopeDiagnostic(): string {
+    const frame = this.envelope;
+    const subtype =
+      !frame || !Object.hasOwn(frame, "subtype")
+        ? "absent"
+        : frame.subtype === "success"
+          ? "success"
+          : frame.subtype === "error"
+            ? "error"
+            : "other";
+    const isError =
+      !frame || !Object.hasOwn(frame, "is_error")
+        ? "absent"
+        : frame.is_error === true
+          ? "true"
+          : frame.is_error === false
+            ? "false"
+            : "other";
+    return `Claude result frames ${this.resultFrames}, final subtype ${subtype}, final is_error ${isError}, final structured_output ${frame && Object.hasOwn(frame, "structured_output") ? "present" : "absent"}`;
+  }
+
   constructor(
     private readonly report: ProgressReporter | undefined,
     private readonly roots: string[],

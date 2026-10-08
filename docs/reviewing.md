@@ -32,7 +32,7 @@ The backend inbox projection decides this set, not browser search or collapsed g
 
 Settings lists the actual queued/reviewing PRs and counts, and the Inbox retains its queued/reviewing filters and row controls. Catch-up creates new automatic full reviews, so existing repository author/action consent may authorize publication only if the future result, untouched draft and every existing gate/hold allow it. Enabling review automation grants no publication consent. See [automatic submission](automatic-submission.md).
 
-Unchanged saves, unrelated settings or consent changes, startup, GET/SSE and migrations never initiate catch-up. Ordinary first observations still record baselines without retroactive review; later head changes and new request events retain their normal triggers, including same-SHA human re-requests. Baselines and jobs persist across restart.
+Unchanged saves, unrelated settings or consent changes, startup, GET/SSE and migrations never initiate catch-up. First observations of requests predating enable or startup record baselines without retroactive review. A newly discovered PR whose real request event occurred after request auto-review was enabled (or after startup when already enabled) queues through the normal request trigger; unknown timeline event dates are not evidence of a new first-seen request. Later head changes and new request events retain their normal triggers, including same-SHA human re-requests. Baselines and jobs persist across restart.
 
 ### Bounded backlog catch-up
 

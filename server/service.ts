@@ -437,6 +437,15 @@ export class ReviewService {
         integrations: defaultIntegrationSettings(),
       };
       db.initializeSettings(defaults);
+      const startup = db.getSettings();
+      db.setSyncMeta({
+        requestReviewSince:
+          startup.repository &&
+          startup.automation.pollRequests &&
+          startup.automation.reviewRequests
+            ? now()
+            : null,
+      });
       executor = await ConfiguredWorkflows.open(
         config,
         db.getSettings().harness!,
@@ -2046,10 +2055,24 @@ export class ReviewService {
 
   updateSettings(update: SettingsUpdate): AppState {
     const before = this.effectiveSnapshot();
-    const repository = update.repository ?? this.db.getSettings().repository;
-    this.db.updateSettings(
+    const previous = this.db.getSettings();
+    const repository = update.repository ?? previous.repository;
+    const next = this.db.updateSettings(
       repository ? update : { ...update, automation: automationOff },
     );
+    if (
+      previous.repository !== next.repository ||
+      previous.automation.pollRequests !== next.automation.pollRequests ||
+      previous.automation.reviewRequests !== next.automation.reviewRequests
+    )
+      this.db.setSyncMeta({
+        requestReviewSince:
+          next.repository &&
+          next.automation.pollRequests &&
+          next.automation.reviewRequests
+            ? now()
+            : null,
+      });
     this.afterPolicyChange(before);
     this.queue.schedule();
     return this.getState();
@@ -2187,6 +2210,11 @@ export class ReviewService {
           : `Authenticated as ${result.user}`,
       );
       this.healthState.githubUser = result.user;
+      const firstSeen = new Set(
+        result.pullRequests
+          .filter((remote) => !this.db.getPr(remote.pr.id))
+          .map((remote) => remote.pr.id),
+      );
       for (const remote of result.pullRequests) {
         const pr = this.observe(remote, {
           requestsKnown: true,
@@ -2206,6 +2234,7 @@ export class ReviewService {
           request,
           result.pullRequests.find((remote) => remote.pr.id === request.prId)
             ?.viewerLogin,
+          firstSeen.has(request.prId),
         );
       for (const remote of result.pullRequests)
         this.armRequests(remote.pr.id, scope);
@@ -3933,6 +3962,7 @@ export class ReviewService {
   private observeRequest(
     request: PollRequest,
     viewerLogin?: RemotePullRequest["viewerLogin"],
+    firstSeen = false,
   ): void {
     const pr = this.db.getPr(request.prId);
     if (!pr) return;
@@ -3943,11 +3973,15 @@ export class ReviewService {
       request.requestedAt,
     );
     if (inserted) this.reconcileSubmitted(pr.id);
+    const since = firstSeen ? this.db.getSyncMeta().requestReviewSince : null;
     if (
       inserted &&
       pr.effectiveAutomation.reviewRequests &&
       pr.state === "OPEN" &&
-      this.db.getAutomationState(pr.id).requestsArmed
+      (this.db.getAutomationState(pr.id).requestsArmed ||
+        (since !== null &&
+          !request.eventId.startsWith("request:") &&
+          Date.parse(request.requestedAt) > Date.parse(since)))
     )
       this.enqueueReview(pr.id, "request", request.eventId, null, viewerLogin);
   }

@@ -128,13 +128,17 @@ class FakeGithub implements GithubAdapter {
     this.set({ ...remote(number, headSha), pr: { ...current.pr, headSha } });
   }
 
-  request(number: number, eventId: string) {
+  request(
+    number: number,
+    eventId: string,
+    requestedAt = "2026-01-02T00:00:00.000Z",
+  ) {
     this.requests.set(number, eventId);
     const current = this.prs.get(number)!;
     current.pr = {
       ...current.pr,
       requested: true,
-      requestedAt: "2026-01-02T00:00:00.000Z",
+      requestedAt,
       requestSource: "direct",
       imported: false,
       createdAt: "2025-12-31T00:00:00.000Z",
@@ -184,7 +188,7 @@ class FakeGithub implements GithubAdapter {
           eventId: this.requests.get(item.pr.number)!,
           prId: item.pr.id,
           headSha: item.pr.headSha,
-          requestedAt: "2026-01-02T00:00:00.000Z",
+          requestedAt: item.pr.requestedAt!,
         })),
     };
   }
@@ -656,6 +660,117 @@ test("request automation catches up on enable, then reviews later events includi
     assert.equal(service.getDetail(one).runs[0].headSha, "sha-1-1");
     assert.equal(reviewer.inputs.length, 3);
     assert.deepEqual(runs(service, two), []);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("a newly requested PR first seen after active polling queues once across restart", async () => {
+  const { service, github, reviewer, config, cleanup } = await makeService();
+  let current = service;
+  try {
+    service.updateSettings({ automation: requestsOn });
+    await service.sync("scheduled");
+    github.set(remote(3));
+    github.request(3, "event-3", new Date().toISOString());
+    await service.sync("scheduled");
+    assert.equal(service.db.hasRequestEvent("event-3"), true);
+    assert.equal(
+      service.db.getAutomationState(prId("owner/repo", 3)).requestsArmed,
+      true,
+    );
+    const id = prId("owner/repo", 3);
+    assert.equal(service.getDetail(id).runs.length, 1);
+    assert.equal(service.getDetail(id).runs[0].requestEventId, "event-3");
+    assert.equal(service.getDetail(id).runs[0].autoSubmission, null);
+    await waitFor(() => service.getDetail(id).runs[0].status === "completed");
+    await service.sync("scheduled");
+    assert.equal(service.getDetail(id).runs.length, 1);
+    await service.close();
+    current = await ReviewService.create(config, github, reviewer);
+    await current.sync("scheduled");
+    assert.equal(current.getDetail(id).runs.length, 1);
+    assert.equal(reviewer.inputs.length, 1);
+    github.request(3, "event-3-again", new Date().toISOString());
+    await current.sync("scheduled");
+    await waitFor(() => current.getDetail(id).runs[0]?.status === "completed");
+    assert.equal(current.getDetail(id).runs.length, 2);
+    assert.equal(current.getDetail(id).runs[0].requestEventId, "event-3-again");
+  } finally {
+    await cleanup(current);
+  }
+});
+
+test("first observations before enable or restart remain baselines, while later requests trigger", async () => {
+  const { service, github, reviewer, config, cleanup } = await makeService();
+  let current = service;
+  try {
+    github.set(remote(3));
+    github.request(3, "old-3");
+    service.updateSettings({ automation: requestsOn });
+    await service.sync("scheduled");
+    assert.equal(service.db.hasRequestEvent("old-3"), true);
+    assert.deepEqual(runs(service, prId("owner/repo", 3)), []);
+
+    await service.close();
+    github.set(remote(4));
+    github.request(4, "old-4", new Date().toISOString());
+    current = await ReviewService.create(config, github, reviewer);
+    await current.sync("scheduled");
+    assert.equal(current.db.hasRequestEvent("old-4"), true);
+    assert.deepEqual(runs(current, prId("owner/repo", 4)), []);
+    assert.equal(
+      current.db.getAutomationState(prId("owner/repo", 4)).requestsArmed,
+      true,
+    );
+
+    github.set(remote(5));
+    github.request(5, "new-5", new Date().toISOString());
+    await current.sync("scheduled");
+    await waitFor(
+      () =>
+        current.getDetail(prId("owner/repo", 5)).runs[0]?.status ===
+        "completed",
+    );
+    assert.equal(
+      current.getDetail(prId("owner/repo", 5)).runs[0].requestEventId,
+      "new-5",
+    );
+    await current.sync("scheduled");
+    assert.equal(current.getDetail(prId("owner/repo", 5)).runs.length, 1);
+    assert.equal(reviewer.inputs.length, 1);
+  } finally {
+    await cleanup(current);
+  }
+});
+
+test("first-seen request honors per-PR Off, unknown event dates and saved edits", async () => {
+  const { service, github, reviewer, cleanup } = await makeService();
+  try {
+    await service.manualReview(one);
+    await waitFor(() => service.getDetail(one).draft !== null);
+    const draft = service.getDetail(one).draft!;
+    service.updateDraft(one, {
+      draftId: draft.id,
+      version: draft.version,
+      body: "SYNTHETIC hand edit",
+      findings: draft.findings,
+      verdict: draft.verdict,
+    });
+    const edited = service.getDetail(one).draft!;
+    service.updateAutomation(two, { reviewRequests: "off" });
+    service.updateSettings({ automation: requestsOn });
+    await service.sync("scheduled");
+    github.request(2, "event-2", new Date().toISOString());
+    github.set(remote(3));
+    github.request(3, "request:owner/repo#3", new Date().toISOString());
+    await service.sync("scheduled");
+    assert.equal(service.db.hasRequestEvent("event-2"), true);
+    assert.equal(service.db.hasRequestEvent("request:owner/repo#3"), true);
+    assert.deepEqual(runs(service, two), []);
+    assert.deepEqual(runs(service, prId("owner/repo", 3)), []);
+    assert.deepEqual(service.getDetail(one).draft, edited);
+    assert.equal(reviewer.inputs.length, 1);
   } finally {
     await cleanup();
   }

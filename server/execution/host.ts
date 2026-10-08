@@ -331,7 +331,7 @@ export class HostExecutor {
             : !stream.completed || !stream.successful || !stream.lastMessage)
       )
         throw new Error(
-          `Host harness did not produce one complete successful structured result (${stream.decoder.diagnostic()})`,
+          `Host harness did not produce one complete successful structured result (${stream.decoder.diagnostic()}${stream instanceof ClaudeStream ? `; ${stream.finalEnvelopeDiagnostic()}` : ""})`,
         );
       if (
         projection?.secrets.some(
