@@ -107,7 +107,7 @@ describe("inbox grouping", () => {
     ]);
   });
 
-  it("orders current viewer approval below submissions regardless of local status", () => {
+  it("orders current viewer approval below submissions even at an earlier commit", () => {
     const submitted = pr({ id: "submitted", status: "submitted", requestedAt: "2026-01-03" });
     for (const status of [
       "ready",
@@ -116,31 +116,30 @@ describe("inbox grouping", () => {
       "reviewing",
       "failed",
       "outdated",
-      "submitted",
-    ] as const) {
-      const approved = pr({
-        id: "approved",
-        status,
-        requestedAt: "2026-01-01",
-        viewerApproval: {
-          viewerLogin: "demo-user",
-          headSha: base.headSha,
-          commitSha: base.headSha,
-        },
-      });
-      expect([approved, submitted].sort(compareInbox).map((row) => row.id)).toEqual([
-        "submitted",
-        "approved",
-      ]);
-      expect(approved.status).toBe(status);
-      expect(settled(approved)).toBe(status === "submitted");
-    }
+    ] as const)
+      for (const commitSha of [base.headSha, "earlier-head"]) {
+        const approved = pr({
+          id: "approved",
+          status,
+          requestedAt: "2026-01-01",
+          viewerApproval: {
+            viewerLogin: "demo-user",
+            headSha: base.headSha,
+            commitSha,
+          },
+        });
+        expect([approved, submitted].sort(compareInbox).map((row) => row.id)).toEqual([
+          "submitted",
+          "approved",
+        ]);
+        expect(approved.status).toBe(status);
+        expect(settled(approved)).toBe(false);
+      }
   });
 
-  it("keeps earlier, stale, incomplete and absent approval in normal status order", () => {
+  it("keeps stale, incomplete and absent approval in normal status order", () => {
     const submitted = pr({ id: "submitted", status: "submitted", requestedAt: "2026-01-03" });
     for (const viewerApproval of [
-      { viewerLogin: "demo-user", headSha: base.headSha, commitSha: "earlier-head" },
       { viewerLogin: "demo-user", headSha: "stale-observation", commitSha: base.headSha },
       { viewerLogin: "demo-user", headSha: base.headSha, commitSha: "" },
       null,
@@ -155,7 +154,7 @@ describe("inbox grouping", () => {
     }
   });
 
-  it("retains age, unknown-date, number and id ordering within the current-approval band", () => {
+  it("retains age, unknown-date, number and id ordering within the viewer-approval band", () => {
     const approved = pr({
       viewerApproval: { viewerLogin: "demo-user", headSha: base.headSha, commitSha: base.headSha },
     });
@@ -166,7 +165,7 @@ describe("inbox grouping", () => {
         ...approved,
         id: "newer",
         number: 2,
-        status: "submitted" as const,
+        viewerApproval: { ...approved.viewerApproval!, commitSha: "earlier-head" },
         requestedAt: "2026-01-03",
       },
       { ...approved, id: "same-a", number: 4, requestedAt: "2026-01-02" },
@@ -181,6 +180,25 @@ describe("inbox grouping", () => {
       "newer",
       "unknown",
     ]);
+  });
+
+  it("keeps every Submitted row in the submission band regardless of viewer approval", () => {
+    const active = pr({ id: "ready", status: "ready", requestedAt: "2026-01-09" });
+    const submitted = pr({ id: "submitted", status: "submitted", requestedAt: "2026-01-03" });
+    for (const commitSha of [base.headSha, "earlier-head"]) {
+      const approved = pr({
+        id: "approved-submitted",
+        status: "submitted",
+        requestedAt: "2026-01-01",
+        viewerApproval: { viewerLogin: "demo-user", headSha: base.headSha, commitSha },
+      });
+      expect([approved, submitted, active].sort(compareInbox).map((row) => row.id)).toEqual([
+        "ready",
+        "approved-submitted",
+        "submitted",
+      ]);
+      expect(settled(approved)).toBe(true);
+    }
   });
 
   it("returns a submitted PR to active order once its status projects new action", () => {
