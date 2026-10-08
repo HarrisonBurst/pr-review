@@ -235,6 +235,7 @@ export interface SyncMeta {
   initialized: boolean;
   lastPollAt: string | null;
   pollError: string | null;
+  requestReviewSince: string | null;
 }
 
 const prProjection = `SELECT prs.*, EXISTS (
@@ -326,7 +327,8 @@ export class AppDatabase {
         id INTEGER PRIMARY KEY CHECK (id = 1),
         initialized INTEGER NOT NULL,
         last_poll_at TEXT,
-        poll_error TEXT
+        poll_error TEXT,
+        request_review_since TEXT
       );
       CREATE TABLE IF NOT EXISTS prs (
         id TEXT PRIMARY KEY,
@@ -562,6 +564,8 @@ export class AppDatabase {
         }
       });
     }
+    if (!this.columns("meta").has("request_review_since"))
+      this.sqlite.exec("ALTER TABLE meta ADD COLUMN request_review_since TEXT");
     if (!this.columns("settings").has("poll_requests")) {
       this.sqlite.exec(`
         ALTER TABLE settings ADD COLUMN poll_commits INTEGER NOT NULL DEFAULT 0;
@@ -993,17 +997,19 @@ export class AppDatabase {
   getSyncMeta(): SyncMeta {
     const row = this.sqlite
       .prepare(
-        "SELECT initialized, last_poll_at, poll_error FROM meta WHERE id = 1",
+        "SELECT initialized, last_poll_at, poll_error, request_review_since FROM meta WHERE id = 1",
       )
       .get() as {
       initialized: number;
       last_poll_at: string | null;
       poll_error: string | null;
+      request_review_since: string | null;
     };
     return {
       initialized: row.initialized === 1,
       lastPollAt: row.last_poll_at,
       pollError: row.poll_error,
+      requestReviewSince: row.request_review_since,
     };
   }
 
@@ -1011,7 +1017,7 @@ export class AppDatabase {
     const current = this.getSyncMeta();
     this.sqlite
       .prepare(
-        "UPDATE meta SET initialized = ?, last_poll_at = ?, poll_error = ? WHERE id = 1",
+        "UPDATE meta SET initialized = ?, last_poll_at = ?, poll_error = ?, request_review_since = ? WHERE id = 1",
       )
       .run(
         update.initialized === undefined
@@ -1025,6 +1031,9 @@ export class AppDatabase {
           ? current.lastPollAt
           : update.lastPollAt,
         update.pollError === undefined ? current.pollError : update.pollError,
+        update.requestReviewSince === undefined
+          ? current.requestReviewSince
+          : update.requestReviewSince,
       );
   }
 
