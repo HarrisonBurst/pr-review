@@ -34,15 +34,9 @@ for (const [kind, approvalTitle] of [
     expect(approval).toHaveTextContent(/^Approved by you$/);
     expect(approval.parentElement).toHaveAttribute("title", approvalTitle);
     expect(approval.parentElement).toHaveAccessibleDescription(approvalTitle);
-    const marker = row.queryByText("Earlier approval");
-    if (kind === "earlier") {
-      expect(marker).toHaveTextContent(/^Earlier approval$/);
-      expect(marker).toHaveAttribute("data-tone", "warn");
-      expect(marker).toBe(approval.nextElementSibling);
-    } else expect(marker).not.toBeInTheDocument();
-    expect([...approval.closest(".right")!.querySelectorAll(".pill")].at(-1)).toBe(
-      marker ?? approval,
-    );
+    expect(row.queryByText("Earlier approval")).not.toBeInTheDocument();
+    expect(approval.parentElement!.children).toHaveLength(1);
+    expect([...approval.closest(".right")!.querySelectorAll(".pill")].at(-1)).toBe(approval);
     expect(row.getByText("Ready")).toBeInTheDocument();
     expect(row.queryByText("Outdated")).not.toBeInTheDocument();
     expect(row.getByText(/Merge:|Mergeable/)).toBeInTheDocument();
@@ -55,14 +49,10 @@ for (const [kind, approvalTitle] of [
     expect(detailApproval).toHaveTextContent(/^Approved by you$/);
     expect(detailApproval.parentElement).toHaveAttribute("title", approvalTitle);
     expect(detailApproval.parentElement).toHaveAccessibleDescription(approvalTitle);
-    const detailMarker = screen.queryByText("Earlier approval");
-    if (kind === "earlier") {
-      expect(detailMarker).toHaveTextContent(/^Earlier approval$/);
-      expect(detailMarker).toHaveAttribute("data-tone", "warn");
-      expect(detailMarker).toBe(detailApproval.nextElementSibling);
-    } else expect(detailMarker).not.toBeInTheDocument();
+    expect(screen.queryByText("Earlier approval")).not.toBeInTheDocument();
+    expect(detailApproval.parentElement!.children).toHaveLength(1);
     expect([...detailApproval.closest(".pr-title")!.querySelectorAll(".pill")].at(-1)).toBe(
-      detailMarker ?? detailApproval,
+      detailApproval,
     );
     expect(screen.queryByText("Outdated")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Preview and submit" })).toBeEnabled();
@@ -99,7 +89,6 @@ for (const [status, copy] of [
       expect([...row.querySelectorAll(".right .pill")].map((pill) => pill.textContent)).toEqual([
         ...badges,
         "Approved by you",
-        "Earlier approval",
       ]);
       await user.click(title);
       await screen.findByRole("region", { name: "Draft review" });
@@ -114,9 +103,8 @@ for (const [status, copy] of [
       expect(pills[4]).toHaveTextContent(/^Review requested /);
       expect(pills[5]).toHaveTextContent(/^Approved by you$/);
       expect(pills[5]).toHaveAttribute("data-tone", "ok");
-      expect(pills[6]).toHaveTextContent(/^Earlier approval$/);
-      expect(pills[6]).toHaveAttribute("data-tone", "warn");
-      expect(pills).toHaveLength(7);
+      expect(screen.queryByText("Earlier approval")).not.toBeInTheDocument();
+      expect(pills).toHaveLength(6);
       expect(pr.autoSubmission).toEqual(original);
       expect(backend.submissions[pr.id] ?? []).toHaveLength(0);
     });
@@ -173,7 +161,8 @@ for (const [group, source] of [
     expect(within(rows()[0]!).queryByText("Approved by you")).not.toBeInTheDocument();
     expect(within(rows()[3]!).getByText("Submitted")).toBeInTheDocument();
     expect(within(rows()[4]!).getByText("Ready")).toBeInTheDocument();
-    expect(within(rows()[5]!).getByText("Earlier approval")).toBeInTheDocument();
+    expect(within(rows()[5]!).getByText("Approved by you")).toBeInTheDocument();
+    expect(screen.queryByText("Earlier approval")).not.toBeInTheDocument();
     expect(within(rows()[5]!).getByText("Ready")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /^Submitted/ }));
     expect(order()).toEqual(hrefs(["pr-455", "pr-471"]));
