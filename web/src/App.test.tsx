@@ -1127,6 +1127,69 @@ describe("pull request detail", () => {
     expect(screen.queryByText("Nothing has been sent to GitHub.")).not.toBeInTheDocument();
   });
 
+  it("shows streamed preflight stages and keeps the payload behind explicit confirmation", async () => {
+    const user = mount();
+    const fetchMock = globalThis.fetch;
+    let previewStream!: ReadableStreamDefaultController<Uint8Array>;
+    let submitStream!: ReadableStreamDefaultController<Uint8Array>;
+    const encode = (event: unknown) => new TextEncoder().encode(`${JSON.stringify(event)}\n`);
+    globalThis.fetch = (input, init) => {
+      const url = String(input);
+      if (!url.endsWith("/preview") && !url.endsWith("/submit")) return fetchMock(input, init);
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          if (url.endsWith("/preview")) previewStream = controller;
+          else submitStream = controller;
+        },
+      });
+      return Promise.resolve(
+        new Response(stream, {
+          headers: { "Content-Type": "application/x-ndjson" },
+        }),
+      );
+    };
+    await screen.findByLabelText(/GitHub review body/);
+    await user.click(screen.getByRole("button", { name: "Preview and submit" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("Connecting to local preview checks")).toBeInTheDocument();
+    await act(async () => previewStream.enqueue(encode({ type: "step", step: "refreshing_pr" })));
+    expect(within(dialog).getByText("Refreshing PR head and diff from GitHub")).toBeInTheDocument();
+    await act(async () =>
+      previewStream.enqueue(encode({ type: "step", step: "checking_readiness" })),
+    );
+    expect(within(dialog).getByText("Checking GitHub merge readiness")).toBeInTheDocument();
+    await act(async () =>
+      previewStream.enqueue(encode({ type: "step", step: "building_payload" })),
+    );
+    expect(
+      within(dialog).getByText("Building exact review payload from the current diff"),
+    ).toBeInTheDocument();
+    expect(backend.submissions["pr-482"]).toBeUndefined();
+    const draft = backend.detail("pr-482").draft!;
+    const preview = backend.preview("pr-482", draft.id, draft.version);
+    await act(async () => {
+      previewStream.enqueue(encode({ type: "result", value: preview }));
+      previewStream.close();
+    });
+    await within(dialog).findByTestId("preview-summary");
+    await user.click(within(dialog).getByRole("button", { name: /Submit request changes/ }));
+    expect(within(dialog).getByText("Connecting to local submission checks")).toBeInTheDocument();
+    await act(async () => submitStream.enqueue(encode({ type: "step", step: "checking_head" })));
+    expect(within(dialog).getByText("Checking current PR state and head")).toBeInTheDocument();
+    await act(async () => submitStream.enqueue(encode({ type: "step", step: "reading_baseline" })));
+    expect(within(dialog).getByText("Reading fresh GitHub review baseline")).toBeInTheDocument();
+    expect(backend.submissions["pr-482"]).toBeUndefined();
+    await act(async () => submitStream.enqueue(encode({ type: "step", step: "sending_review" })));
+    expect(within(dialog).getByText("Sending confirmed review to GitHub")).toBeInTheDocument();
+    const submission = backend.submit("pr-482", preview.id);
+    await act(async () => {
+      submitStream.enqueue(encode({ type: "result", value: submission }));
+      submitStream.close();
+    });
+    expect(await within(dialog).findByRole("button", { name: "Back to Inbox" })).toBeEnabled();
+    expect(submission.payload).toEqual(preview.payload);
+  });
+
   it("labels a pre-write submission-check failure separately from preview failure", async () => {
     const user = mount(undefined, (b) => {
       const handle = b.handle.bind(b);
@@ -1150,6 +1213,34 @@ describe("pull request detail", () => {
     expect(within(dialog).getByRole("button", { name: "Submit review to GitHub" })).toBeDisabled();
     await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("never suggests retrying an ambiguous submission response", async () => {
+    let calls = 0;
+    const user = mount(undefined, (b) => {
+      const handle = b.handle.bind(b);
+      b.handle = (method, path, body) => {
+        if (path.endsWith("/submit")) {
+          calls++;
+          throw new MockError(
+            503,
+            "SYNTHETIC review write outcome uncertain",
+            "submission_ambiguous",
+          );
+        }
+        return handle(method, path, body);
+      };
+    });
+    await screen.findByLabelText(/GitHub review body/);
+    await user.click(screen.getByRole("button", { name: "Preview and submit" }));
+    const dialog = await screen.findByRole("dialog");
+    await within(dialog).findByTestId("payload-body");
+    await user.click(within(dialog).getByRole("button", { name: /Submit request changes/ }));
+    expect(await within(dialog).findByText("Submission outcome uncertain.")).toBeInTheDocument();
+    expect(within(dialog).getByText(/Do not retry until/)).toBeInTheDocument();
+    expect(within(dialog).queryByText(/reload the draft, and try again/)).not.toBeInTheDocument();
+    expect(calls).toBe(1);
+    expect(within(dialog).getByRole("button", { name: "Submit review to GitHub" })).toBeDisabled();
   });
 
   it("closes the successful result and returns to the inbox with its primary action", async () => {
