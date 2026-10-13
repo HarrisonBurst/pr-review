@@ -2254,7 +2254,11 @@ export class ReviewService {
           pr.hasReviewedHead
         )
           continue;
-        if (enabled.reviewNewCommits && pr.effectiveAutomation.reviewNewCommits)
+        if (
+          enabled.reviewNewCommits &&
+          pr.effectiveAutomation.reviewNewCommits &&
+          !this.viewerApproval(pr)
+        )
           this.enqueueReview(
             pr.id,
             "new_commits",
@@ -3951,7 +3955,8 @@ export class ReviewService {
         if (
           state.commitHead !== null &&
           options.automatic &&
-          pr.state === "OPEN"
+          pr.state === "OPEN" &&
+          !this.viewerApproval(pr)
         )
           this.enqueueReview(id, "new_commits", null, null, remote.viewerLogin);
       }

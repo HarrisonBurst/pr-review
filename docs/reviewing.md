@@ -12,7 +12,7 @@ Start with the [installation guide](../README.md#install-build-and-run) and [exe
 Settings has four independent global defaults, grouped into polling and auto-review pairs. These control private drafts, not permission to publish. The separate [default-off author/action publication policy](automatic-submission.md) enables neither pair:
 
 - Poll for new commits refreshes every tracked open PR on the poll interval. It keeps stale indicators and new-commit lists current without an open detail page.
-- Auto-review new commits queues a `new_commits` review when a polled head changes. Title and description edits do not count, and this policy acts only while commit polling is on.
+- Auto-review new commits queues a `new_commits` review when a polled head changes, unless your latest completed GitHub review is a standing approval on that PR, even if it approved an earlier commit. Title and description edits do not count, and this policy acts only while commit polling is on.
 - Poll for review requests lists the repository's open PRs and records requests addressed to you or your current teams, including same-commit re-requests. It refreshes tracked PRs so closed PRs and removed requests without an import or successful review/submission history leave the inbox. Only matching or already tracked PRs are fetched in full; unrelated open PRs are never imported or diffed.
 - Auto-review requests queues a review for each newly observed request event. It acts only while request polling is on.
 
@@ -26,7 +26,7 @@ Older databases discard per-PR `pollCommits` and `pollRequests` overrides at sta
 
 ### Enable catch-up and baselines
 
-Turning an effective auto-review policy from Off to On refreshes and catches up the configured repository's visible open inbox. It queues PRs without a completed full review of their exact refreshed current head: commit automation covers tracked inbox PRs, while request-only automation requires a current request. Global polling prerequisites and per-PR Off overrides still apply. Enabling polling also catches up PRs whose saved auto-review choice thereby becomes effective; enabling a per-PR override does the same for that PR.
+Turning an effective auto-review policy from Off to On refreshes and catches up the configured repository's visible open inbox. It queues PRs without a completed full review of their exact refreshed current head: commit automation covers tracked inbox PRs, while request-only automation requires a current request. Global polling prerequisites and per-PR Off overrides still apply. Standing approval by the authenticated viewer suppresses new-commit catch-up at any head, but a current review request may still queue request catch-up. Enabling polling also catches up PRs whose saved auto-review choice thereby becomes effective; enabling a per-PR override does the same for that PR.
 
 The backend inbox projection decides this set, not browser search or collapsed groups. Closed, merged and untracked legacy rows are excluded. A local draft, AI revision, failed review or visual Ready/Failed status is not completed full-review history. Pending/running same-head reviews deduplicate through the existing queue, and stopped-head suppression still applies. Latest-head refresh and configured capture use the normal automatic `new_commits` or `request` intent, with unchanged concurrency, per-PR sequencing and per-run limits. There is no catch-up batch cap or parallel scheduler.
 
@@ -134,7 +134,7 @@ On upgrade, those unrequested rows without successful full-review or confirmed s
 
 Inbox rows and the PR page show a single **Approved by you** pill when your latest completed GitHub review approves a known commit, including reviews made outside this app. Approval on a known different commit keeps the same pill, with **Approved by you at an earlier revision** in its tooltip. It does not mean you approved the current commit. A later comment, request for changes or dismissal removes the indicator; pending review drafts do not replace a completed review.
 
-The indicator refreshes with ordinary PR syncs and checks. Missing or incomplete GitHub evidence shows nothing, and a failed refresh clears cached approval rather than claiming it still applies. It is separate from the app's Submitted status and GitHub merge readiness, and never approves or publishes anything.
+The indicator refreshes with ordinary PR syncs and checks. Missing or incomplete GitHub evidence shows nothing, and a failed refresh clears cached approval rather than claiming it still applies. While this approval stands, automatic new-commit reviews and their enable catch-up skip the PR regardless of which commit was approved. A dismissed approval or later completed non-approve review resumes new-commit automation; a new review request still triggers request automation, and manual Review, Re-review and Ask AI remain available. The indicator is separate from the app's Submitted status and GitHub merge readiness, and never approves or publishes anything.
 
 ## Merge readiness
 
