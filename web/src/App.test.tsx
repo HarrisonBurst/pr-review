@@ -4355,18 +4355,27 @@ describe("oauth connections", () => {
   it("keeps the latest Settings snapshot and manual OAuth client input when an older refresh finishes last", async () => {
     window.location.hash = "#/settings";
     let holdNextState = false;
-    let release!: () => void;
-    let enter!: () => void;
-    const held = new Promise<void>((resolve) => (release = resolve));
-    const entered = new Promise<void>((resolve) => (enter = resolve));
+    let releaseOlder!: () => void;
+    let enterOlder!: () => void;
+    let releaseNewer!: () => void;
+    let enterNewer!: () => void;
+    const olderHeld = new Promise<void>((resolve) => (releaseOlder = resolve));
+    const olderEntered = new Promise<void>((resolve) => (enterOlder = resolve));
+    const newerHeld = new Promise<void>((resolve) => (releaseNewer = resolve));
+    const newerEntered = new Promise<void>((resolve) => (enterNewer = resolve));
     const user = mount({ harness: "saved", oauth: "discovered" }, (b) => {
       const handle = b.handle.bind(b);
       b.handle = async (method, path, body) => {
         const snapshot = await handle(method, path, body);
-        if (method === "GET" && path === "/api/state" && holdNextState) {
-          holdNextState = false;
-          enter();
-          await held;
+        if (method === "GET" && path === "/api/state") {
+          if (holdNextState) {
+            holdNextState = false;
+            enterOlder();
+            await olderHeld;
+          } else if (b.settings.pollIntervalSeconds === 160) {
+            enterNewer();
+            await newerHeld;
+          }
         }
         return snapshot;
       };
@@ -4383,10 +4392,12 @@ describe("oauth connections", () => {
     expect(panel(syntheticId).getByLabelText("Client id")).toHaveValue("manual-synthetic-client");
     holdNextState = true;
     backend.updateSettings({ pollIntervalSeconds: backend.settings.pollIntervalSeconds });
-    await entered;
+    await olderEntered;
     backend.updateSettings({ pollIntervalSeconds: 160 });
+    await newerEntered;
+    await act(async () => releaseNewer());
     await waitFor(() => expect(screen.getByLabelText("Poll interval (seconds)")).toHaveValue(160));
-    await act(async () => release());
+    await act(async () => releaseOlder());
     expect(screen.getByLabelText("Poll interval (seconds)")).toHaveValue(160);
     expect(panel(syntheticId).getByLabelText("Client id")).toHaveValue("manual-synthetic-client");
     expect(backend.settings.pollIntervalSeconds).toBe(160);
