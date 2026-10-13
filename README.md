@@ -39,9 +39,51 @@ On first launch:
 
 By default, app data lives in `~/Library/Application Support/pr-review` and the SQLite database at `~/Library/Application Support/pr-review/pr-review.sqlite`. `PR_REVIEW_DATA_DIR` changes the data directory; `PR_REVIEW_DB_PATH` overrides **only** the database location. `XDG_DATA_HOME` changes the default data root when set. The app does not load a `.env` file: export environment variables before launching. See [configuration and storage](docs/configuration.md) for other settings, privacy, backups and troubleshooting.
 
+## Optional automatic submission
+
+Leave Automatic submission Off unless you intend future reviews to publish without an individual confirmation. In Settings > Automation, add exact PR-author GitHub usernames, select Comment, Approve and/or Request changes separately in each row, turn Automatic submission On, inspect the full future policy and explicitly confirm before Save. New rows grant nothing. Comment cannot publish a result with blocking findings, even excluded ones; the app never changes the generated verdict to fit consent.
+
+Saving the policy never enables polling, starts reviews or publishes existing drafts. Human-review requests override author permissions. Once Begin editing is acknowledged for an eligible draft, it stays manual-only, even if the edits are discarded; saved edits also make drafts manual-only. Manual exact preview/submit remains available while automatic publication is held.
+
+Human-request detection uses the same configured full-review pass in every supported mode, without a separate classifier call. Source-backed requests persist until resolved or dismissed and explicitly resumed for later reviews. Missing, malformed or unavailable observations cannot clear known requests but do not by themselves block publication. Pre-rollout drafts stay manual; freshness, consent, writer identity, exact payload and uncertain-write safeguards remain strict. Read the [automatic submission safeguards and limits](docs/automatic-submission.md) before opting in.
+
+## Review skill basics
+
+Select a trusted absolute `.md` entry in Settings, with its required companion resources available. The app supplies the final JSON schema and output instructions, so your skill does not need to repeat them. It should allow that output rather than insist on a prose-only final answer.
+
+New full reviews and AI revisions use output contract 1.1: one JSON object with `overview`, `body`, `findings`, `verdict`, `rationale` and nullable `humanReviewRequest`. Markdown inside the text fields is fine; no particular headings are required. `overview`, finding `evidence` and `rationale` stay private, while `body` and included finding bodies can enter the confirmed GitHub payload.
+
+A minimal synthetic final result, not a required skill template:
+
+```json
+{
+  "overview": "The cancellation path can leave a request pending.",
+  "body": "Please resolve pending requests when cancelling.",
+  "findings": [
+    {
+      "id": "cancellation",
+      "severity": "blocking",
+      "path": "src/request.ts",
+      "line": 14,
+      "body": "Reject the pending promise before returning, or callers waiting for it never finish.",
+      "evidence": "In this fictional change, the new cancellation branch returns without settling the promise.",
+      "origin": "introduced",
+      "included": true
+    }
+  ],
+  "verdict": "REQUEST_CHANGES",
+  "rationale": "One introduced blocking defect in cancellation.",
+  "humanReviewRequest": null
+}
+```
+
+The checker validates format, not this fictional diff anchor, and grants no permission to publish. Core-invalid final output fails the run instead of creating a draft or revision proposal. Missing or malformed human-request extensions are advisory unavailable detection, not failed reviews. See the [review skill guide](docs/review-output.md) for finding examples, customization and `npm run check:review-output < candidate.json`, which needs no model or running app.
+
 ## Execution and safety
 
-Fresh unsaved Settings selects **Dangerous intent**, not permission to execute. Dangerous runs the selected host harness with full native tools, authentication and configuration; every Save requires fresh host-risk confirmation. Those tools can write files or publish directly outside the app's preview controls. Use [Isolated Harnesses or Docker](docs/execution-modes.md) when their limits suit your trusted skill: Isolated restricts native tools but is not OS/process containment; Docker requires separately approved capabilities and setup. Neither falls back to Dangerous. Connections and read grants are separate from native authentication.
+Fresh unsaved Settings selects **Dangerous intent**, not permission to execute. Dangerous runs the selected host harness with full native tools, authentication and configuration; every Save requires fresh host-risk confirmation. Those tools can write files or publish directly outside the app's preview controls. Use [Isolated Harnesses or Docker](docs/execution-modes.md) when their limits suit your trusted skill: Isolated restricts native tools but is not OS/process containment; Docker requires separately approved capabilities and setup. Neither falls back to Dangerous.
+
+Connections for Isolated and Docker use separate app-owned authorization and explicit read grants. Authentication alone grants no reviewer tools, and Connected does not prove a successful content read. See [Connections](docs/execution-modes.md#connections) before granting provider access.
 
 PR content is untrusted. The app pins review checkouts and excludes PR-provided agent configuration, hooks and scripts from its review path. Keep the data directory private: it contains repository content, drafts and execution captures. The app's publication gates do not contain Dangerous native tools or guarantee that GitHub data cannot change after a final read. See [execution boundaries](EXECUTION_BOUNDARY.md), [trusted sources](docs/trusted-sources.md) and [automatic submission](docs/automatic-submission.md) for details.
 
