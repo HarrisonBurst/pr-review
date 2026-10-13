@@ -19,6 +19,7 @@ import {
 import type {
   CommitComparison,
   GithubAdapter,
+  GithubReviewResponse,
   PollResult,
   PollScope,
   RemotePullRequest,
@@ -27,6 +28,7 @@ import type {
 } from "../adapters.js";
 import { loadConfig } from "../config.js";
 import { AppDatabase } from "../db.js";
+import { deriveViewerApproval } from "../discussion.js";
 import { createHttpServer } from "../http.js";
 import { ReviewService } from "../service.js";
 import { prId } from "../util.js";
@@ -114,6 +116,7 @@ class FakeGithub implements GithubAdapter {
   readonly demo = false;
   prs = new Map<number, RemotePullRequest>();
   requests = new Map<number, string>();
+  reviews = new Map<number, GithubReviewResponse[]>();
   pollCalls: Array<PollScope | undefined> = [];
   fetched: number[] = [];
   hold = false;
@@ -145,6 +148,35 @@ class FakeGithub implements GithubAdapter {
     };
   }
 
+  review(number: number, state: string, commitSha: string) {
+    const reviews = this.reviews.get(number) ?? [];
+    reviews.push({
+      id: reviews.length + 1,
+      user: { login: "tester" },
+      state,
+      submitted_at: new Date(
+        Date.UTC(2026, 0, 1, 0, reviews.length),
+      ).toISOString(),
+      commit_id: commitSha,
+    });
+    this.reviews.set(number, reviews);
+  }
+
+  observed(item: RemotePullRequest): RemotePullRequest {
+    return {
+      ...item,
+      viewerLogin: "tester",
+      pr: {
+        ...item.pr,
+        viewerApproval: deriveViewerApproval(
+          "tester",
+          this.reviews.get(item.pr.number) ?? [],
+          item.pr.headSha,
+        ),
+      },
+    };
+  }
+
   releasePoll() {
     this.release?.();
     this.release = null;
@@ -158,7 +190,11 @@ class FakeGithub implements GithubAdapter {
     this.fetched.push(number);
     const item = this.prs.get(number);
     if (!item) throw new Error(`unknown pull request ${number}`);
-    return { ...item, pr: { ...item.pr, requested: false, requestedAt: null } };
+    const observed = this.observed(item);
+    return {
+      ...observed,
+      pr: { ...observed.pr, requested: false, requestedAt: null },
+    };
   }
 
   async poll(
@@ -177,7 +213,7 @@ class FakeGithub implements GithubAdapter {
     for (const item of items) this.fetched.push(item.pr.number);
     return {
       user: "tester",
-      pullRequests: items.map((item) => ({ ...item, pr: { ...item.pr } })),
+      pullRequests: items.map((item) => this.observed(item)),
       requests: items
         .filter(
           (item) =>
@@ -623,6 +659,153 @@ test("new-commit automation catches up on enable, then reviews head changes only
     await service.sync("scheduled");
     await settle();
     assert.equal(service.getDetail(one).runs.length, 3);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("standing viewer approval suppresses enabled commit catch-up and later polled heads", async () => {
+  const { service, github, reviewer, cleanup } = await makeService();
+  const approvedHead = "a".repeat(40);
+  const laterHead = "b".repeat(40);
+  try {
+    github.push(1, approvedHead);
+    github.review(1, "APPROVED", approvedHead);
+    await service.sync();
+    assert.equal(
+      service.getDetail(one).pr.viewerApproval?.commitSha,
+      approvedHead,
+    );
+
+    service.updateAutomation(two, { reviewNewCommits: "off" });
+    service.updateSettings({ automation: commitsOn });
+    await service.sync();
+    assert.deepEqual(runs(service, one), []);
+    assert.equal(service.getDetail(one).pr.headSha, approvedHead);
+
+    github.push(1, laterHead);
+    await service.sync("scheduled");
+    assert.equal(
+      service.getDetail(one).pr.viewerApproval?.commitSha,
+      approvedHead,
+    );
+    assert.equal(service.getDetail(one).pr.headSha, laterHead);
+    assert.deepEqual(runs(service, one), []);
+    assert.equal(reviewer.inputs.length, 0);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("earlier viewer approval skips commit catch-up but explicit requests and manual re-reviews still queue", async () => {
+  const { service, github, reviewer, cleanup } = await makeService();
+  const approvedHead = "a".repeat(40);
+  const currentHead = "b".repeat(40);
+  try {
+    github.push(1, currentHead);
+    github.review(1, "APPROVED", approvedHead);
+    github.request(1, "event-1");
+    await service.sync();
+    assert.equal(
+      service.getDetail(one).pr.viewerApproval?.commitSha,
+      approvedHead,
+    );
+
+    service.updateAutomation(two, {
+      reviewNewCommits: "off",
+      reviewRequests: "off",
+    });
+    service.updateSettings({ automation: allOn });
+    await service.sync();
+    await waitFor(() => service.getDetail(one).runs[0]?.status === "completed");
+    assert.deepEqual(runs(service, one), [
+      ["request", currentHead, "completed"],
+    ]);
+    assert.equal(service.getDetail(one).runs[0].requestEventId, "event-1");
+
+    github.request(1, "event-2");
+    await service.sync("scheduled");
+    await waitFor(
+      () =>
+        service.getDetail(one).runs.length === 2 &&
+        service.getDetail(one).runs[0].status === "completed",
+    );
+    assert.equal(service.getDetail(one).runs[0].trigger, "request");
+    assert.equal(service.getDetail(one).runs[0].requestEventId, "event-2");
+
+    await service.manualReview(one);
+    await waitFor(
+      () =>
+        service.getDetail(one).runs.length === 3 &&
+        service.getDetail(one).runs[0].status === "completed",
+    );
+    assert.equal(service.getDetail(one).runs[0].trigger, "manual");
+
+    const newHead = "c".repeat(40);
+    github.push(1, newHead);
+    github.request(1, "event-3");
+    await service.sync("scheduled");
+    await waitFor(
+      () =>
+        service.getDetail(one).runs.length === 4 &&
+        service.getDetail(one).runs[0].status === "completed",
+    );
+    assert.equal(service.getDetail(one).runs[0].trigger, "request");
+    assert.equal(service.getDetail(one).runs[0].headSha, newHead);
+    assert.equal(service.getDetail(one).runs[0].requestEventId, "event-3");
+    assert.equal(reviewer.inputs.length, 4);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("dismissed approval and later non-approve review resume commit polling", async () => {
+  const { service, github, reviewer, cleanup } = await makeService();
+  const approvedHead = "a".repeat(40);
+  const dismissedHead = "b".repeat(40);
+  const nextHead = "c".repeat(40);
+  const commentedHead = "d".repeat(40);
+  try {
+    github.push(1, approvedHead);
+    github.review(1, "APPROVED", approvedHead);
+    await service.sync();
+    service.updateAutomation(two, { reviewNewCommits: "off" });
+    service.updateSettings({ automation: commitsOn });
+    await service.sync();
+    assert.deepEqual(runs(service, one), []);
+
+    github.review(1, "DISMISSED", approvedHead);
+    github.push(1, dismissedHead);
+    await service.sync("scheduled");
+    assert.equal(service.getDetail(one).pr.viewerApproval, null);
+    await waitFor(() => service.getDetail(one).runs[0]?.status === "completed");
+    assert.deepEqual(runs(service, one), [
+      ["new_commits", dismissedHead, "completed"],
+    ]);
+
+    github.review(1, "APPROVED", dismissedHead);
+    github.push(1, nextHead);
+    await service.sync("scheduled");
+    assert.equal(
+      service.getDetail(one).pr.viewerApproval?.commitSha,
+      dismissedHead,
+    );
+    assert.equal(service.getDetail(one).runs.length, 1);
+
+    github.review(1, "COMMENTED", dismissedHead);
+    github.push(1, commentedHead);
+    await service.sync("scheduled");
+    assert.equal(service.getDetail(one).pr.viewerApproval, null);
+    await waitFor(
+      () =>
+        service.getDetail(one).runs[0]?.status === "completed" &&
+        service.getDetail(one).runs.length === 2,
+    );
+    assert.deepEqual(runs(service, one), [
+      ["new_commits", commentedHead, "completed"],
+      ["new_commits", dismissedHead, "completed"],
+    ]);
+    assert.equal(reviewer.inputs.length, 2);
   } finally {
     await cleanup();
   }
