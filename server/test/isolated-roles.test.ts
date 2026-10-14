@@ -9,6 +9,64 @@ import { isolatedReview } from "../execution/isolated.js";
 import { RunProgressTracker } from "../progress.js";
 import { reviewSchema } from "../review-output.js";
 
+test("Isolated Additional and Main receive captured request history without inventing current request or viewer", async () => {
+  const f = await fixture();
+  try {
+    assert.equal(
+      (await f.send("/settings/harness", f.selection, "PATCH")).status,
+      200,
+    );
+    assert.equal((await f.send("/sync", {})).status, 200);
+    const detail = await f.detail();
+    f.service.db.upsertPr(
+      {
+        ...detail.pr,
+        requested: false,
+        requestedAt: null,
+        requestSource: null,
+      },
+      detail.diff,
+      false,
+    );
+    assert.equal((await f.send(`${f.pr}/review`, {})).status, 202);
+    const snapshot = f.service.db.getRunSnapshot(
+      (await f.detail()).runs[0].id,
+    )!;
+    assert.equal(snapshot.pr.requested, false);
+    assert.equal(snapshot.pr.requestSource, null);
+    assert.equal(snapshot.pr.historicalRequestSource, "direct");
+    assert.equal(snapshot.viewerLogin, undefined);
+    await f.dispatch();
+    assert.equal((await f.detail()).runs[0].status, "completed");
+    const calls = await f.calls();
+    assert.equal(calls.length, 3);
+    for (const call of calls) {
+      const block = call.prompt.match(
+        /<captured-pr>\n([\s\S]*?)\n<\/captured-pr>/,
+      );
+      assert.ok(block);
+      assert.deepEqual(JSON.parse(block[1]), {
+        url: snapshot.pr.url,
+        repository: snapshot.pr.repository,
+        title: snapshot.pr.title,
+        body: snapshot.pr.body,
+        headRef: snapshot.pr.headRef,
+        baseRef: snapshot.pr.baseRef,
+        requested: false,
+        requestSource: null,
+        historicalRequestSource: "direct",
+      });
+      assert.match(
+        call.prompt,
+        /Authenticated viewer login captured for this review: null/,
+      );
+      assert.match(call.prompt, /UNTRUSTED/);
+    }
+  } finally {
+    await f.close();
+  }
+});
+
 const questionRequest = {
   mode: "explain",
   range: {

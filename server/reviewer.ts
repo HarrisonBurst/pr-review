@@ -20,6 +20,9 @@ export function inputInstruction(input: ReviewerInput): string {
       body: input.pr.body ?? null,
       headRef: input.pr.headRef ?? null,
       baseRef: input.pr.baseRef ?? null,
+      requested: input.pr.requested,
+      requestSource: input.pr.requestSource,
+      historicalRequestSource: input.pr.historicalRequestSource,
     })
       .replaceAll("<", "\\u003c")
       .replaceAll(">", "\\u003e")}\n</captured-pr>`,
