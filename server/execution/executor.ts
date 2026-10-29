@@ -491,16 +491,13 @@ export class DockerExecutor {
         stream.decoder.stats.malformed ||
         stream.decoder.stats.overflowed ||
         (stream instanceof ClaudeStream
-          ? stream.resultFrames !== 1 ||
-            !stream.envelope ||
-            stream.envelope.is_error !== false ||
-            stream.envelope.subtype !== "success"
+          ? !stream.successfulResult()
           : stream instanceof CodexStream
             ? stream.incomplete() || stream.failure
             : !stream.completed || !stream.successful || !stream.lastMessage)
       )
         throw new Error(
-          "Workflow did not produce exactly one complete successful structured result",
+          "Workflow did not produce a complete successful structured result",
         );
       let value: unknown;
       try {

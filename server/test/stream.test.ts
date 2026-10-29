@@ -169,7 +169,50 @@ test("Claude stream keeps only the last result frame and ignores unknown frames"
   );
   stream.decoder.end();
   assert.equal(stream.envelope?.result, "second");
+  assert.equal(stream.resultFrames, 2);
+  assert.equal(stream.successfulResult(), false);
   assert.equal(stream.decoder.stats.frames, 3);
+});
+
+test("Claude completion requires its own final structured output", () => {
+  const stream = new ClaudeStream(undefined, []);
+  const push = (frame: unknown) =>
+    stream.decoder.push(Buffer.from(line(frame)));
+  push({
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    structured_output: { answer: "first" },
+  });
+  push({ type: "system", subtype: "task_notification" });
+  assert.equal(stream.successfulResult(), true);
+  for (const frame of [
+    {
+      type: "result",
+      subtype: "error",
+      is_error: true,
+      structured_output: { answer: "bad" },
+    },
+    { type: "result", subtype: "success", is_error: false },
+    {
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      structured_output: null,
+    },
+  ]) {
+    push(frame);
+    assert.equal(
+      stream.successfulResult(),
+      Object.hasOwn(frame, "structured_output") && frame.subtype === "success",
+    );
+  }
+  stream.decoder.end();
+  assert.equal(stream.resultFrames, 4);
+  assert.match(
+    stream.finalEnvelopeDiagnostic(),
+    /Claude result frames 4, final subtype success, final is_error false, final structured_output present/,
+  );
 });
 
 test("Codex frames report commands and take the final agent message as the result", () => {

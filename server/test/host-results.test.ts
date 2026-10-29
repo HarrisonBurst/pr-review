@@ -35,7 +35,16 @@ process.stdin.on("end", () => {
       structured_output: { answer: "${marker}" },
     };
     emit(frame);
-    if (mode === "duplicate") emit(frame);
+    if (mode.startsWith("multi-")) {
+      emit({type:"system",subtype:"task_notification",message:"Codex task finished"});
+      const final = {type:"result",subtype:"success",is_error:false,structured_output:{answer:"FINAL_FIXTURE_ANSWER"}};
+      if (mode === "multi-error") {final.subtype = "error";final.is_error = true;}
+      if (mode === "multi-missing-output") delete final.structured_output;
+      if (mode === "multi-invalid-output") final.structured_output = {wrong:"not an answer"};
+      if (mode === "multi-malformed") process.stdout.write('not-json\\n');
+      if (mode === "multi-oversize") process.stdout.write('x'.repeat(4000001)+'\\n');
+      emit(final);
+    }
   }
   if (mode === "nonzero") process.exitCode = 3;
 });
@@ -81,13 +90,28 @@ process.stdin.on("end", () => {
     const accepted = await execute("success");
     assert.deepEqual(accepted.value, { answer: marker });
     assert.match(accepted.log, /2 frames decoded, 0 malformed, 0 over/);
+    const multi = await execute("multi-success");
+    assert.deepEqual(multi.value, { answer: "FINAL_FIXTURE_ANSWER" });
+    assert.match(multi.log, /4 frames decoded, 0 malformed, 0 over/);
     for (const [mode, diagnostic] of [
       [
         "missing",
         "Claude result frames 0, final subtype absent, final is_error absent, final structured_output absent",
       ],
       [
-        "duplicate",
+        "multi-error",
+        "Claude result frames 2, final subtype error, final is_error true, final structured_output present",
+      ],
+      [
+        "multi-missing-output",
+        "Claude result frames 2, final subtype success, final is_error false, final structured_output absent",
+      ],
+      [
+        "multi-malformed",
+        "Claude result frames 2, final subtype success, final is_error false, final structured_output present",
+      ],
+      [
+        "multi-oversize",
         "Claude result frames 2, final subtype success, final is_error false, final structured_output present",
       ],
       [
@@ -109,12 +133,16 @@ process.stdin.on("end", () => {
       );
       assert.match(
         error,
-        /Host harness did not produce one complete successful structured result \(\d+ frames decoded, 0 malformed, 0 over/,
+        /Host harness did not produce a complete successful structured result \(\d+ frames decoded, \d+ malformed, \d+ over/,
       );
       assert.ok(error.includes(diagnostic), error);
       assert.equal(error.includes(marker), false);
       assert.ok(error.length < 350);
     }
+    await assert.rejects(
+      execute("multi-invalid-output"),
+      /answer|schema|additional/i,
+    );
     await assert.rejects(
       execute("nonzero"),
       /Dangerous claude process failed \(exit 3\); no fallback was used/,

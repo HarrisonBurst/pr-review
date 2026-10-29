@@ -136,6 +136,14 @@ export class ClaudeStream {
   resultFrames = 0;
   toolCalls = 0;
 
+  successfulResult(): boolean {
+    return (
+      this.envelope?.subtype === "success" &&
+      this.envelope.is_error === false &&
+      Object.hasOwn(this.envelope, "structured_output")
+    );
+  }
+
   finalEnvelopeDiagnostic(): string {
     const frame = this.envelope;
     const subtype =

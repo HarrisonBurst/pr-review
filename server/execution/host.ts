@@ -322,16 +322,13 @@ export class HostExecutor {
         stream.decoder.stats.malformed ||
         stream.decoder.stats.overflowed ||
         (stream instanceof ClaudeStream
-          ? stream.resultFrames !== 1 ||
-            !stream.envelope ||
-            stream.envelope.is_error !== false ||
-            stream.envelope.subtype !== "success"
+          ? !stream.successfulResult()
           : stream instanceof CodexStream
             ? stream.incomplete() || stream.failure
             : !stream.completed || !stream.successful || !stream.lastMessage)
       )
         throw new Error(
-          `Host harness did not produce one complete successful structured result (${stream.decoder.diagnostic()}${stream instanceof ClaudeStream ? `; ${stream.finalEnvelopeDiagnostic()}` : ""})`,
+          `Host harness did not produce a complete successful structured result (${stream.decoder.diagnostic()}${stream instanceof ClaudeStream ? `; ${stream.finalEnvelopeDiagnostic()}` : ""})`,
         );
       if (
         projection?.secrets.some(
