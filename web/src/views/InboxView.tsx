@@ -493,6 +493,11 @@ export function InboxView() {
                               </span>
                             )}
                             <StatusPill status={pr.status} />
+                            {pr.botReviewPending && (
+                              <span className="request-hint">
+                                AI-reviewed, awaiting your personal review
+                              </span>
+                            )}
                             <AutoSubmissionBadges
                               state={pr.autoSubmission}
                               includeUnavailable={false}

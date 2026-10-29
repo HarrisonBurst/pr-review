@@ -2251,6 +2251,7 @@ export class ReviewService {
         if (
           pr.repository !== this.db.getSettings().repository ||
           !inboxEligible(pr) ||
+          !(pr.requested || pr.imported || pr.hasReviewHistory) ||
           pr.hasReviewedHead
         )
           continue;
@@ -3940,6 +3941,7 @@ export class ReviewService {
                 requested: existing.requested,
                 requestedAt: existing.requestedAt,
                 requestSource: existing.requestSource,
+                botReviewPending: existing.botReviewPending,
               }),
         }
       : {};
@@ -3956,6 +3958,7 @@ export class ReviewService {
           state.commitHead !== null &&
           options.automatic &&
           pr.state === "OPEN" &&
+          (pr.requested || pr.imported || pr.hasReviewHistory) &&
           !this.viewerApproval(pr)
         )
           this.enqueueReview(id, "new_commits", null, null, remote.viewerLogin);

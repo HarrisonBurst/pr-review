@@ -136,6 +136,12 @@ interface GithubListedPull {
   teams: number[];
 }
 
+interface GithubSearchResponse {
+  total_count: number;
+  incomplete_results: boolean;
+  items: Array<{ number: number }>;
+}
+
 interface GithubEvent {
   id: number | string;
   event: string;
@@ -576,6 +582,7 @@ export class GithubCliAdapter implements GithubAdapter {
     let requester: RequestIdentity | null = null;
     const byId = new Map<string, RemotePullRequest>();
     const listed = new Map<number, GithubRequestResponse>();
+    const botReviewed = new Map<number, boolean | null>();
     if (scope) {
       for (const number of scope.numbers)
         byId.set(
@@ -593,6 +600,26 @@ export class GithubCliAdapter implements GithubAdapter {
         const { direct, team } = this.addressed(current, requester);
         if (direct || team) candidates.set(number, null);
       }
+      const reviewed = await this.listReviewedBy(repository, requester.login);
+      const knownPending = new Set(
+        known
+          .filter(
+            (previous) =>
+              previous.repository === repository && previous.botReviewPending,
+          )
+          .map((previous) => previous.number),
+      );
+      for (const number of knownPending) reviewed.add(number);
+      for (const number of reviewed) {
+        if (!listed.has(number) && !knownPending.has(number)) continue;
+        const pending = await this.hasPendingBotReview(
+          repository,
+          number,
+          requester.login,
+        );
+        botReviewed.set(number, pending);
+        if (pending) candidates.set(number, null);
+      }
       for (const previous of known)
         if (previous.repository === repository)
           candidates.set(previous.number, previous);
@@ -608,9 +635,23 @@ export class GithubCliAdapter implements GithubAdapter {
     const requests: PollRequest[] = [];
     for (const item of byId.values()) {
       if (item.pr.state !== "OPEN") {
-        item.pr = { ...item.pr, ...unrequested };
+        item.pr = { ...item.pr, ...unrequested, botReviewPending: false };
         continue;
       }
+      const previous = known.find((entry) => entry.id === item.pr.id);
+      item.pr.botReviewPending = scope
+        ? ((previous?.botReviewPending
+            ? await this.hasPendingBotReview(
+                repository,
+                item.pr.number,
+                identity.user,
+              )
+            : false) ??
+          previous?.botReviewPending ??
+          false)
+        : (botReviewed.get(item.pr.number) ??
+          previous?.botReviewPending ??
+          false);
       if (scope && !scope.requestNumbers.includes(item.pr.number)) {
         const previous = known.find((entry) => entry.id === item.pr.id);
         item.pr = {
@@ -864,6 +905,131 @@ export class GithubCliAdapter implements GithubAdapter {
     return ids;
   }
 
+  private async listReviewedBy(
+    repository: string,
+    login: string,
+  ): Promise<Set<number>> {
+    const query = encodeURIComponent(
+      `repo:${repository} is:pr is:open reviewed-by:${login}`,
+    );
+    const reviewed = new Set<number>();
+    for (let page = 1; page <= pageLimit; page += 1) {
+      const response = parseJson<GithubSearchResponse>(
+        await this.gh([
+          "api",
+          `search/issues?q=${query}&per_page=100&page=${page}`,
+        ]),
+        "reviewed pull request search",
+      );
+      if (
+        response.incomplete_results !== false ||
+        !Number.isSafeInteger(response.total_count) ||
+        response.total_count < 0 ||
+        response.total_count > 1000 ||
+        !Array.isArray(response.items) ||
+        response.items.length > 100
+      )
+        throw new GithubRequestError(
+          "reviewed pull request search is incomplete",
+          null,
+        );
+      for (const item of response.items) {
+        if (
+          !Number.isSafeInteger(item.number) ||
+          item.number < 1 ||
+          reviewed.has(item.number)
+        )
+          throw new GithubRequestError(
+            "reviewed pull request search has invalid identities",
+            null,
+          );
+        reviewed.add(item.number);
+      }
+      if (reviewed.size === response.total_count) return reviewed;
+      if (response.items.length < 100)
+        throw new GithubRequestError(
+          "reviewed pull request search is incomplete",
+          null,
+        );
+    }
+    throw new GithubRequestError(
+      "reviewed pull request search exceeded its page limit",
+      null,
+    );
+  }
+
+  private async hasPendingBotReview(
+    repository: string,
+    number: number,
+    login: string,
+  ): Promise<boolean | null> {
+    let requestedAt: number | null = null;
+    try {
+      for (let page = 1; page <= pageLimit; page += 1) {
+        const events = parseJson<GithubEvent[]>(
+          await this.gh([
+            "api",
+            `repos/${repository}/issues/${number}/events?per_page=100&page=${page}`,
+          ]),
+          "issue events",
+        );
+        for (const event of events)
+          if (
+            event.event === "review_requested" &&
+            event.requested_reviewer?.login?.toLowerCase() ===
+              login.toLowerCase()
+          ) {
+            if (!Number.isFinite(Date.parse(event.created_at))) return null;
+            requestedAt = Math.max(
+              requestedAt ?? 0,
+              Date.parse(event.created_at),
+            );
+          }
+        if (events.length < 100) break;
+        if (page === pageLimit) return null;
+      }
+      if (requestedAt === null) return false;
+      const reviews = await acquireReviews((args) => this.gh(args), {
+        repository,
+        number,
+      });
+      let botAt: number | null = null;
+      let personalAt: number | null = null;
+      for (const review of reviews) {
+        if (!review.user?.login) return null;
+        if (
+          review.user.login.toLowerCase() !== login.toLowerCase() ||
+          review.state === "PENDING"
+        )
+          continue;
+        if (
+          !["APPROVED", "COMMENTED", "CHANGES_REQUESTED", "DISMISSED"].includes(
+            review.state ?? "",
+          ) ||
+          !Number.isFinite(Date.parse(review.submitted_at ?? ""))
+        )
+          return null;
+        const submittedAt = Date.parse(review.submitted_at!);
+        const marker =
+          /<!-- glide-agent-review agent=harrison-pr-reviewer head=([0-9a-f]{40}) run=[^\s<>]+ -->/i.exec(
+            review.body ?? "",
+          );
+        const marked =
+          review.state === "COMMENTED" &&
+          marker &&
+          marker[1].toLowerCase() === review.commit_id?.toLowerCase();
+        if (marked && submittedAt >= requestedAt)
+          botAt = Math.max(botAt ?? 0, submittedAt);
+        else if (!marked) personalAt = Math.max(personalAt ?? 0, submittedAt);
+      }
+      return (
+        botAt !== null && (personalAt === null || personalAt < requestedAt)
+      );
+    } catch {
+      return null;
+    }
+  }
+
   private async requestedReviewer(
     repository: string,
     number: number,
@@ -946,6 +1112,7 @@ export class GithubCliAdapter implements GithubAdapter {
       ...unrequested,
       historicalRequestSource: null,
       imported: false,
+      botReviewPending: false,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       status: "unreviewed",
@@ -998,6 +1165,7 @@ function demoPullRequest(repository: string): RemotePullRequest {
       requestSource: "direct",
       historicalRequestSource: null,
       imported: false,
+      botReviewPending: false,
       createdAt: "2025-12-31T00:00:00.000Z",
       updatedAt: "2026-01-01T00:00:00.000Z",
       status: "unreviewed",

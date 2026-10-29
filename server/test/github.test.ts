@@ -76,7 +76,9 @@ const fs = require("node:fs");
 const args = process.argv.slice(2);
 fs.appendFileSync(process.env.FAKE_GH_LOG, JSON.stringify(args) + "\\n");
 const responses = JSON.parse(fs.readFileSync(process.env.FAKE_GH_RESPONSES, "utf8"));
-const match = responses[args[1]] ?? { stderr: "gh: Not Found (HTTP 404)", code: 1 };
+const match = responses[args[1]] ?? (args[1].startsWith("search/issues?")
+  ? { stdout: JSON.stringify({ total_count: 0, incomplete_results: false, items: [] }) }
+  : { stderr: "gh: Not Found (HTTP 404)", code: 1 });
 let stdout = match.stdout ?? "";
 const jq = args.indexOf("--jq");
 if (jq >= 0 && args[jq + 1].startsWith("[.[] | {number, users:"))
@@ -743,12 +745,10 @@ test("poll ignores teams the user is not in, same-slug teams elsewhere, and remo
     assert.deepEqual(nonMember.pullRequests, []);
     assert.deepEqual(nonMember.requests, []);
     assert.ok(
-      !nonMember.calls.some(
-        (args) =>
-          args[1].startsWith("repos/owner/repo/issues") ||
-          args[1].startsWith("repos/owner/repo/pulls/"),
+      !nonMember.calls.some((args) =>
+        args[1].startsWith("repos/owner/repo/pulls/"),
       ),
-      "a pull request requested only of other teams is never fetched",
+      "a pull request requested only of other teams is never fetched in full",
     );
 
     const previouslyRequested = await pollOnce(gh, {
@@ -1116,6 +1116,69 @@ async function httpSync(port: number): Promise<AppState> {
   return (await response.json()) as AppState;
 }
 
+test("reviewed-by search is paginated, bounded and rejects incomplete results before candidate scans", async () => {
+  const gh = await makeFakeGh();
+  const search =
+    "search/issues?q=repo%3Aowner%2Frepo%20is%3Apr%20is%3Aopen%20reviewed-by%3AReviewer&per_page=100&page=1";
+  try {
+    await gh.respond({
+      ...scopedRepositoryResponses(),
+      [search]: {
+        stdout: JSON.stringify({
+          total_count: 101,
+          incomplete_results: false,
+          items: Array.from({ length: 100 }, (_, index) => ({
+            number: 1000 + index,
+          })),
+        }),
+      },
+      [search.replace("&page=1", "&page=2")]: {
+        stdout: JSON.stringify({
+          total_count: 101,
+          incomplete_results: false,
+          items: [{ number: 7 }],
+        }),
+      },
+    });
+    const result = await new GithubCliAdapter().poll("owner/repo", []);
+    assert.deepEqual(
+      result.pullRequests.map((item) => item.pr.number),
+      [7, 8],
+    );
+    const calls = await gh.calls();
+    assert.equal(
+      calls.filter((args) => args[1].startsWith("search/issues?")).length,
+      2,
+    );
+    assert.equal(
+      calls.some((args) => args[1].startsWith("repos/owner/repo/issues/9")),
+      false,
+    );
+    assert.equal(
+      calls.some((args) => args[1].startsWith("repos/owner/repo/issues/10")),
+      false,
+    );
+    for (const response of [
+      { total_count: 1, incomplete_results: true, items: [{ number: 7 }] },
+      { total_count: 1001, incomplete_results: false, items: [{ number: 7 }] },
+      { total_count: 2, incomplete_results: false, items: [{ number: 7 }] },
+    ]) {
+      await gh.respond({
+        ...scopedRepositoryResponses(),
+        [search]: { stdout: JSON.stringify(response) },
+      });
+      await assert.rejects(
+        () => new GithubCliAdapter().poll("owner/repo", []),
+        (error: unknown) =>
+          error instanceof GithubRequestError &&
+          /incomplete/.test(error.message),
+      );
+    }
+  } finally {
+    await gh.cleanup();
+  }
+});
+
 test("sync tracks only open direct and own-team requests and never fetches unrelated pull requests", async () => {
   const gh = await makeFakeGh();
   const { service, reviewer, config, cleanup } = await makeService();
@@ -1163,6 +1226,9 @@ test("sync tracks only open direct and own-team requests and never fetches unrel
   }
 });
 
+const reviewedSearch =
+  "search/issues?q=repo%3Aowner%2Frepo%20is%3Apr%20is%3Aopen%20reviewed-by%3AReviewer&per_page=100&page=1";
+
 const withoutRequests = (responses: Responses): Responses => ({
   ...responses,
   "repos/owner/repo/pulls?state=open&per_page=100&page=1": {
@@ -1175,6 +1241,216 @@ const withoutRequests = (responses: Responses): Responses => ({
   },
   "repos/owner/repo/pulls/7/requested_reviewers": requestedReviewers([]),
   "repos/owner/repo/pulls/8/requested_reviewers": requestedReviewers([]),
+});
+
+test("consumed sub-minute request and marked bot review enter the inbox without creating a local review", async () => {
+  const gh = await makeFakeGh();
+  const { service, reviewer, config, cleanup } = await makeService();
+  let current = service;
+  const seven = prId("owner/repo", 7);
+  const nine = prId("owner/repo", 9);
+  const server = createHttpServer(service, config);
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  const marker = `<!-- glide-agent-review agent=harrison-pr-reviewer head=${headA} run=run-123 -->`;
+  const bot = {
+    id: 702,
+    user: { login: "Reviewer" },
+    state: "COMMENTED",
+    submitted_at: "2026-01-01T00:00:50Z",
+    commit_id: headA,
+    body: marker,
+  };
+  const responses = {
+    ...withoutRequests(scopedRepositoryResponses()),
+    [reviewedSearch]: {
+      stdout: JSON.stringify({
+        total_count: 3,
+        incomplete_results: false,
+        items: [{ number: 7 }, { number: 9 }, { number: 10 }],
+      }),
+    },
+    "repos/owner/repo/issues/7/events?per_page=100&page=1": events([
+      event(701, "2026-01-01T00:00:00Z", { login: "Reviewer" }),
+    ]),
+    "repos/owner/repo/issues/9/events?per_page=100&page=1": events([
+      event(901, "2026-01-01T00:00:00Z", { login: "Reviewer" }),
+    ]),
+    "repos/owner/repo/issues/10/events?per_page=100&page=1": events([
+      event(1001, "2026-01-01T00:00:00Z", { team: coreTeam }),
+    ]),
+    "repos/owner/repo/pulls/7/reviews?per_page=100&page=1": {
+      stdout: JSON.stringify([bot]),
+    },
+    "repos/owner/repo/pulls/9/reviews?per_page=100&page=1": {
+      stdout: JSON.stringify([{ ...bot, id: 902, body: "Personal comment" }]),
+    },
+    "repos/owner/repo/pulls/10/reviews?per_page=100&page=1": {
+      stdout: JSON.stringify([bot]),
+    },
+  };
+  try {
+    await gh.respond(responses);
+    const state = await httpSync(address.port);
+    assert.deepEqual(
+      state.prs.map((pr) => pr.number),
+      [7],
+    );
+    assert.equal(state.prs[0]?.botReviewPending, true);
+    assert.equal(state.prs[0]?.requested, false);
+    assert.equal(state.prs[0]?.hasReviewHistory, false);
+    assert.equal(state.prs[0]?.historicalRequestSource, "direct");
+    assert.equal(service.db.getPr(nine), null);
+    assert.deepEqual(service.getDetail(seven).runs, []);
+    assert.deepEqual(service.db.listJobs(), []);
+    assert.deepEqual(reviewer.inputs, []);
+    const draft = service.createManualDraft(seven).draft!;
+    await service.sync();
+    assert.equal(service.getDetail(seven).draft?.id, draft.id);
+    await service.close();
+    current = await ReviewService.create(
+      config,
+      new GithubCliAdapter(),
+      reviewer,
+    );
+    assert.deepEqual(inboxNumbers(current), [7]);
+    assert.equal(current.getDetail(seven).pr.botReviewPending, true);
+    assert.equal(current.getDetail(seven).draft?.id, draft.id);
+    await current.sync();
+    assert.deepEqual(inboxNumbers(current), [7]);
+    assert.deepEqual(current.db.listJobs(), []);
+    await gh.respond({
+      ...responses,
+      "repos/owner/repo/issues/7/events?per_page=100&page=1": {
+        stderr: "Rate limited (HTTP 429)",
+        code: 1,
+      },
+    });
+    await current.sync();
+    assert.equal(current.getDetail(seven).pr.botReviewPending, true);
+    assert.deepEqual(inboxNumbers(current), [7]);
+    await gh.respond({
+      ...responses,
+      [reviewedSearch]: { stderr: "Search unavailable (HTTP 503)", code: 1 },
+    });
+    await assert.rejects(() => current.sync(), /Search unavailable/);
+    assert.equal(current.getDetail(seven).pr.botReviewPending, true);
+    await gh.respond(responses);
+    current.db.updateSettings({
+      automation: {
+        ...automationOff,
+        pollCommits: true,
+        reviewNewCommits: true,
+      },
+    });
+    await current.sync();
+    await gh.respond({
+      ...responses,
+      "repos/owner/repo/pulls/7": { stdout: pull(headB) },
+      [`repos/owner/repo/compare/${base}...${headB}`]: {
+        stdout: diffFor(headB),
+      },
+    });
+    await current.sync();
+    assert.equal(current.getDetail(seven).pr.botReviewPending, true);
+    assert.deepEqual(current.db.listJobs(), []);
+
+    await gh.respond({
+      ...responses,
+      "repos/owner/repo/pulls/7/reviews?per_page=100&page=1": {
+        stdout: JSON.stringify([
+          bot,
+          {
+            ...bot,
+            id: 703,
+            body: "My own review",
+            submitted_at: "2026-01-01T00:02:00Z",
+          },
+        ]),
+      },
+    });
+    await current.sync("scheduled");
+    assert.deepEqual(inboxNumbers(current), []);
+    assert.equal(current.getDetail(seven).pr.botReviewPending, false);
+    current.db.updateSettings({ automation: automationOff });
+    assert.equal(current.getDetail(seven).draft?.id, draft.id);
+    current.db.markImported(seven);
+    await current.sync();
+    assert.deepEqual(inboxNumbers(current), [7]);
+    assert.equal(current.getDetail(seven).pr.imported, true);
+
+    await gh.respond({
+      ...responses,
+      "repos/owner/repo/pulls/7": {
+        stdout: pull(headA).replace('"state":"open"', '"state":"closed"'),
+      },
+    });
+    await current.sync();
+    assert.deepEqual(inboxNumbers(current), []);
+    assert.equal(current.getDetail(seven).pr.state, "CLOSED");
+    assert.equal(current.getDetail(seven).pr.botReviewPending, false);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await cleanup(current);
+    await gh.cleanup();
+  }
+});
+
+test("confirmed local submission clears bot-only reason but retains the PR and draft", async () => {
+  const gh = await makeFakeGh();
+  const { service, cleanup } = await makeService();
+  const seven = prId("owner/repo", 7);
+  try {
+    await gh.respond({
+      ...withoutRequests(scopedRepositoryResponses()),
+      [reviewedSearch]: {
+        stdout: JSON.stringify({
+          total_count: 1,
+          incomplete_results: false,
+          items: [{ number: 7 }],
+        }),
+      },
+      "repos/owner/repo/issues/7/events?per_page=100&page=1": events([
+        event(701, "2026-01-01T00:00:00Z", { login: "Reviewer" }),
+      ]),
+      "repos/owner/repo/pulls/7/reviews?per_page=100&page=1": {
+        stdout: JSON.stringify([
+          {
+            id: 702,
+            user: { login: "Reviewer" },
+            state: "COMMENTED",
+            submitted_at: "2026-01-01T00:00:50Z",
+            commit_id: headA,
+            body: `<!-- glide-agent-review agent=harrison-pr-reviewer head=${headA} run=run-123 -->`,
+          },
+        ]),
+      },
+    });
+    await service.sync();
+    const draft = service.createManualDraft(seven).draft!;
+    const preview = await service.preview(seven, draft.id, draft.version);
+    service.db.createSubmission(
+      {
+        id: "confirmed-local-review",
+        previewId: preview.id,
+        status: "submitted",
+        payload: preview.payload,
+        githubReviewId: "review-1",
+        url: "https://example.invalid/review-1",
+        error: null,
+        createdAt: "2026-01-01T00:03:00Z",
+      },
+      seven,
+    );
+    assert.equal(service.getDetail(seven).pr.botReviewPending, false);
+    assert.deepEqual(inboxNumbers(service), [7]);
+    assert.equal(service.getDetail(seven).draft?.id, draft.id);
+    assert.equal(service.getDetail(seven).pr.hasReviewHistory, true);
+  } finally {
+    await cleanup();
+    await gh.cleanup();
+  }
 });
 
 const inboxNumbers = (service: ReviewService) =>

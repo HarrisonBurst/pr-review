@@ -628,6 +628,9 @@ export function PrView({ id, listed }: { id: string; listed: PullRequest | undef
             {pr.requested && (
               <Pill tone="info">Review requested {relativeTime(pr.requestedAt)}</Pill>
             )}
+            {pr.botReviewPending && (
+              <Pill tone="info">AI-reviewed, awaiting your personal review</Pill>
+            )}
             <ViewerApprovalPill pr={pr} />
           </div>
           <h1>

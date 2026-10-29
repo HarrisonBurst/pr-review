@@ -110,6 +110,7 @@ function remote(headSha = HEAD1): RemotePullRequest {
     lastReviewedAt: null,
     hasReviewedHead: false,
     hasReviewHistory: false,
+    botReviewPending: false,
     mergeReadiness: null,
     automation: inheritAutomation,
     effectiveAutomation: automationOff,

@@ -1193,6 +1193,7 @@ export interface PullRequest {
   lastReviewedAt: string | null;
   hasReviewedHead: boolean;
   hasReviewHistory: boolean;
+  botReviewPending: boolean;
   mergeReadiness: MergeReadiness | null;
   automation: AutomationOverrides;
   autoSubmissionOverride?: AutoSubmissionOverride;
@@ -1201,7 +1202,8 @@ export interface PullRequest {
 
 export function inboxEligible(pr: PullRequest): boolean {
   return (
-    pr.state === "OPEN" && (pr.requested || pr.imported || pr.hasReviewHistory)
+    pr.state === "OPEN" &&
+    (pr.requested || pr.imported || pr.hasReviewHistory || pr.botReviewPending)
   );
 }
 

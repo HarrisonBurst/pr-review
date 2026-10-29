@@ -270,7 +270,7 @@ export async function acquireDiscussion(
 
 export async function acquireReviews(
   read: GithubRead,
-  pr: PullRequest,
+  pr: Pick<PullRequest, "repository" | "number">,
 ): Promise<GithubReviewResponse[]> {
   return githubPages(read, `repos/${pr.repository}/pulls/${pr.number}/reviews`);
 }
