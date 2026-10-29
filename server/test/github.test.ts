@@ -743,12 +743,10 @@ test("poll ignores teams the user is not in, same-slug teams elsewhere, and remo
     assert.deepEqual(nonMember.pullRequests, []);
     assert.deepEqual(nonMember.requests, []);
     assert.ok(
-      !nonMember.calls.some(
-        (args) =>
-          args[1].startsWith("repos/owner/repo/issues") ||
-          args[1].startsWith("repos/owner/repo/pulls/"),
+      !nonMember.calls.some((args) =>
+        args[1].startsWith("repos/owner/repo/pulls/"),
       ),
-      "a pull request requested only of other teams is never fetched",
+      "a pull request requested only of other teams is never fetched in full",
     );
 
     const previouslyRequested = await pollOnce(gh, {
@@ -1143,9 +1141,7 @@ test("sync tracks only open direct and own-team requests and never fetches unrel
       !calls.some(
         (args) =>
           args[1].startsWith("repos/owner/repo/pulls/9") ||
-          args[1].startsWith("repos/owner/repo/pulls/10") ||
-          args[1].startsWith("repos/owner/repo/issues/9") ||
-          args[1].startsWith("repos/owner/repo/issues/10"),
+          args[1].startsWith("repos/owner/repo/pulls/10"),
       ),
       "unrelated pull requests are neither fetched nor diffed",
     );
@@ -1175,6 +1171,185 @@ const withoutRequests = (responses: Responses): Responses => ({
   },
   "repos/owner/repo/pulls/7/requested_reviewers": requestedReviewers([]),
   "repos/owner/repo/pulls/8/requested_reviewers": requestedReviewers([]),
+});
+
+test("consumed sub-minute request and marked bot review enter the inbox without creating a local review", async () => {
+  const gh = await makeFakeGh();
+  const { service, reviewer, config, cleanup } = await makeService();
+  let current = service;
+  const seven = prId("owner/repo", 7);
+  const nine = prId("owner/repo", 9);
+  const server = createHttpServer(service, config);
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  const marker = `<!-- glide-agent-review agent=harrison-pr-reviewer head=${headA} run=run-123 -->`;
+  const bot = {
+    id: 702,
+    user: { login: "Reviewer" },
+    state: "COMMENTED",
+    submitted_at: "2026-01-01T00:00:50Z",
+    commit_id: headA,
+    body: marker,
+  };
+  const responses = {
+    ...withoutRequests(scopedRepositoryResponses()),
+    "repos/owner/repo/issues/7/events?per_page=100&page=1": events([
+      event(701, "2026-01-01T00:00:00Z", { login: "Reviewer" }),
+    ]),
+    "repos/owner/repo/issues/9/events?per_page=100&page=1": events([
+      event(901, "2026-01-01T00:00:00Z", { login: "Reviewer" }),
+    ]),
+    "repos/owner/repo/issues/10/events?per_page=100&page=1": events([
+      event(1001, "2026-01-01T00:00:00Z", { team: coreTeam }),
+    ]),
+    "repos/owner/repo/pulls/7/reviews?per_page=100&page=1": {
+      stdout: JSON.stringify([bot]),
+    },
+    "repos/owner/repo/pulls/9/reviews?per_page=100&page=1": {
+      stdout: JSON.stringify([{ ...bot, id: 902, body: "Personal comment" }]),
+    },
+    "repos/owner/repo/pulls/10/reviews?per_page=100&page=1": {
+      stdout: JSON.stringify([bot]),
+    },
+  };
+  try {
+    await gh.respond(responses);
+    const state = await httpSync(address.port);
+    assert.deepEqual(
+      state.prs.map((pr) => pr.number),
+      [7],
+    );
+    assert.equal(state.prs[0]?.botReviewPending, true);
+    assert.equal(state.prs[0]?.requested, false);
+    assert.equal(state.prs[0]?.hasReviewHistory, false);
+    assert.equal(state.prs[0]?.historicalRequestSource, "direct");
+    assert.equal(service.db.getPr(nine), null);
+    assert.deepEqual(service.getDetail(seven).runs, []);
+    assert.deepEqual(service.db.listJobs(), []);
+    assert.deepEqual(reviewer.inputs, []);
+    const draft = service.createManualDraft(seven).draft!;
+    await service.sync();
+    assert.equal(service.getDetail(seven).draft?.id, draft.id);
+    await service.close();
+    current = await ReviewService.create(
+      config,
+      new GithubCliAdapter(),
+      reviewer,
+    );
+    assert.deepEqual(inboxNumbers(current), [7]);
+    assert.equal(current.getDetail(seven).pr.botReviewPending, true);
+    assert.equal(current.getDetail(seven).draft?.id, draft.id);
+    await current.sync();
+    assert.deepEqual(inboxNumbers(current), [7]);
+    assert.deepEqual(current.db.listJobs(), []);
+    current.db.updateSettings({
+      automation: {
+        ...automationOff,
+        pollCommits: true,
+        reviewNewCommits: true,
+      },
+    });
+    await current.sync();
+    await gh.respond({
+      ...responses,
+      "repos/owner/repo/pulls/7": { stdout: pull(headB) },
+      [`repos/owner/repo/compare/${base}...${headB}`]: {
+        stdout: diffFor(headB),
+      },
+    });
+    await current.sync();
+    assert.equal(current.getDetail(seven).pr.botReviewPending, true);
+    assert.deepEqual(current.db.listJobs(), []);
+
+    await gh.respond({
+      ...responses,
+      "repos/owner/repo/pulls/7/reviews?per_page=100&page=1": {
+        stdout: JSON.stringify([
+          bot,
+          {
+            ...bot,
+            id: 703,
+            body: "My own review",
+            submitted_at: "2026-01-01T00:02:00Z",
+          },
+        ]),
+      },
+    });
+    await current.sync("scheduled");
+    assert.deepEqual(inboxNumbers(current), []);
+    assert.equal(current.getDetail(seven).pr.botReviewPending, false);
+    current.db.updateSettings({ automation: automationOff });
+    assert.equal(current.getDetail(seven).draft?.id, draft.id);
+    current.db.markImported(seven);
+    await current.sync();
+    assert.deepEqual(inboxNumbers(current), [7]);
+    assert.equal(current.getDetail(seven).pr.imported, true);
+
+    await gh.respond({
+      ...responses,
+      "repos/owner/repo/pulls/7": {
+        stdout: pull(headA).replace('"state":"open"', '"state":"closed"'),
+      },
+    });
+    await current.sync();
+    assert.deepEqual(inboxNumbers(current), []);
+    assert.equal(current.getDetail(seven).pr.state, "CLOSED");
+    assert.equal(current.getDetail(seven).pr.botReviewPending, false);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await cleanup(current);
+    await gh.cleanup();
+  }
+});
+
+test("confirmed local submission clears bot-only reason but retains the PR and draft", async () => {
+  const gh = await makeFakeGh();
+  const { service, cleanup } = await makeService();
+  const seven = prId("owner/repo", 7);
+  try {
+    await gh.respond({
+      ...withoutRequests(scopedRepositoryResponses()),
+      "repos/owner/repo/issues/7/events?per_page=100&page=1": events([
+        event(701, "2026-01-01T00:00:00Z", { login: "Reviewer" }),
+      ]),
+      "repos/owner/repo/pulls/7/reviews?per_page=100&page=1": {
+        stdout: JSON.stringify([
+          {
+            id: 702,
+            user: { login: "Reviewer" },
+            state: "COMMENTED",
+            submitted_at: "2026-01-01T00:00:50Z",
+            commit_id: headA,
+            body: `<!-- glide-agent-review agent=harrison-pr-reviewer head=${headA} run=run-123 -->`,
+          },
+        ]),
+      },
+    });
+    await service.sync();
+    const draft = service.createManualDraft(seven).draft!;
+    const preview = await service.preview(seven, draft.id, draft.version);
+    service.db.createSubmission(
+      {
+        id: "confirmed-local-review",
+        previewId: preview.id,
+        status: "submitted",
+        payload: preview.payload,
+        githubReviewId: "review-1",
+        url: "https://example.invalid/review-1",
+        error: null,
+        createdAt: "2026-01-01T00:03:00Z",
+      },
+      seven,
+    );
+    assert.equal(service.getDetail(seven).pr.botReviewPending, false);
+    assert.deepEqual(inboxNumbers(service), [7]);
+    assert.equal(service.getDetail(seven).draft?.id, draft.id);
+    assert.equal(service.getDetail(seven).pr.hasReviewHistory, true);
+  } finally {
+    await cleanup();
+    await gh.cleanup();
+  }
 });
 
 const inboxNumbers = (service: ReviewService) =>

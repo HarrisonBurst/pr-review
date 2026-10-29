@@ -914,6 +914,7 @@ const basePr = (
   lastReviewedAt: null,
   hasReviewedHead: false,
   hasReviewHistory: false,
+  botReviewPending: false,
   mergeReadiness: null,
   ...over,
 });

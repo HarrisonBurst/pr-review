@@ -68,6 +68,7 @@ function remote(number: number, headSha = `sha-${number}`): RemotePullRequest {
     lastReviewedAt: null,
     hasReviewedHead: false,
     hasReviewHistory: false,
+    botReviewPending: false,
     mergeReadiness: null,
     automation: inheritAutomation,
     effectiveAutomation: automationOff,

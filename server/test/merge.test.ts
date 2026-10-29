@@ -68,6 +68,7 @@ function pullRequest(headSha = head): PullRequest {
     lastReviewedAt: null,
     hasReviewedHead: false,
     hasReviewHistory: false,
+    botReviewPending: false,
     mergeReadiness: null,
     automation: inheritAutomation,
     effectiveAutomation: automationOff,

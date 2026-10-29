@@ -576,6 +576,7 @@ export class GithubCliAdapter implements GithubAdapter {
     let requester: RequestIdentity | null = null;
     const byId = new Map<string, RemotePullRequest>();
     const listed = new Map<number, GithubRequestResponse>();
+    const botReviewed = new Set<number>();
     if (scope) {
       for (const number of scope.numbers)
         byId.set(
@@ -592,6 +593,12 @@ export class GithubCliAdapter implements GithubAdapter {
         listed.set(number, current);
         const { direct, team } = this.addressed(current, requester);
         if (direct || team) candidates.set(number, null);
+        if (
+          await this.hasPendingBotReview(repository, number, requester.login)
+        ) {
+          botReviewed.add(number);
+          candidates.set(number, null);
+        }
       }
       for (const previous of known)
         if (previous.repository === repository)
@@ -608,9 +615,18 @@ export class GithubCliAdapter implements GithubAdapter {
     const requests: PollRequest[] = [];
     for (const item of byId.values()) {
       if (item.pr.state !== "OPEN") {
-        item.pr = { ...item.pr, ...unrequested };
+        item.pr = { ...item.pr, ...unrequested, botReviewPending: false };
         continue;
       }
+      item.pr.botReviewPending = scope
+        ? ((known.find((entry) => entry.id === item.pr.id)?.botReviewPending &&
+            (await this.hasPendingBotReview(
+              repository,
+              item.pr.number,
+              identity.user,
+            ))) ??
+          false)
+        : botReviewed.has(item.pr.number);
       if (scope && !scope.requestNumbers.includes(item.pr.number)) {
         const previous = known.find((entry) => entry.id === item.pr.id);
         item.pr = {
@@ -864,6 +880,71 @@ export class GithubCliAdapter implements GithubAdapter {
     return ids;
   }
 
+  private async hasPendingBotReview(
+    repository: string,
+    number: number,
+    login: string,
+  ): Promise<boolean> {
+    let requestedAt: number | null = null;
+    try {
+      for (let page = 1; page <= pageLimit; page += 1) {
+        const events = parseJson<GithubEvent[]>(
+          await this.gh([
+            "api",
+            `repos/${repository}/issues/${number}/events?per_page=100&page=${page}`,
+          ]),
+          "issue events",
+        );
+        for (const event of events)
+          if (
+            event.event === "review_requested" &&
+            event.requested_reviewer?.login?.toLowerCase() ===
+              login.toLowerCase() &&
+            Number.isFinite(Date.parse(event.created_at))
+          )
+            requestedAt = Math.max(
+              requestedAt ?? 0,
+              Date.parse(event.created_at),
+            );
+        if (events.length < 100) break;
+        if (page === pageLimit) return false;
+      }
+      if (requestedAt === null) return false;
+      const reviews = await acquireReviews((args) => this.gh(args), {
+        repository,
+        number,
+      });
+      let botAt: number | null = null;
+      let personalAt: number | null = null;
+      for (const review of reviews) {
+        if (!review.user?.login) return false;
+        if (
+          review.user.login.toLowerCase() !== login.toLowerCase() ||
+          review.state === "PENDING" ||
+          !Number.isFinite(Date.parse(review.submitted_at ?? ""))
+        )
+          continue;
+        const submittedAt = Date.parse(review.submitted_at!);
+        const marker =
+          /<!-- glide-agent-review agent=harrison-pr-reviewer head=([0-9a-f]{40}) run=[^\s<>]+ -->/i.exec(
+            review.body ?? "",
+          );
+        const marked =
+          review.state === "COMMENTED" &&
+          marker &&
+          marker[1].toLowerCase() === review.commit_id?.toLowerCase();
+        if (marked && submittedAt >= requestedAt)
+          botAt = Math.max(botAt ?? 0, submittedAt);
+        else if (!marked) personalAt = Math.max(personalAt ?? 0, submittedAt);
+      }
+      return (
+        botAt !== null && (personalAt === null || personalAt < requestedAt)
+      );
+    } catch {
+      return false;
+    }
+  }
+
   private async requestedReviewer(
     repository: string,
     number: number,
@@ -946,6 +1027,7 @@ export class GithubCliAdapter implements GithubAdapter {
       ...unrequested,
       historicalRequestSource: null,
       imported: false,
+      botReviewPending: false,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       status: "unreviewed",
@@ -998,6 +1080,7 @@ function demoPullRequest(repository: string): RemotePullRequest {
       requestSource: "direct",
       historicalRequestSource: null,
       imported: false,
+      botReviewPending: false,
       createdAt: "2025-12-31T00:00:00.000Z",
       updatedAt: "2026-01-01T00:00:00.000Z",
       status: "unreviewed",

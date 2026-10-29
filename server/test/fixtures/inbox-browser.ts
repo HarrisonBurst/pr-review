@@ -16,7 +16,7 @@ for (const [number, label, day, approval] of [
   [47, "viewer approval at the current commit", "02", "current"],
   [42, "submitted review", "03", null],
   [43, "submitted review with viewer approval", "04", "earlier"],
-  [44, "ordinary requested review", "05", null],
+  [44, "AI-reviewed, awaiting your personal review", "05", null],
   [45, "ordinary ready draft", "06", null],
   [48, "earlier approval superseded by a comment", "07", "superseded"],
 ] as const) {
@@ -30,6 +30,9 @@ for (const [number, label, day, approval] of [
     headSha: "a".repeat(40),
     requestedAt: `2026-01-${day}T00:00:00Z`,
     historicalRequestSource: "direct",
+    requested: number !== 44,
+    requestSource: number === 44 ? null : "direct",
+    botReviewPending: number === 44,
     viewerApproval: approval
       ? deriveViewerApproval(
           "demo-user",

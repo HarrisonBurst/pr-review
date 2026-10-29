@@ -109,6 +109,7 @@ interface PrRow {
   last_reviewed_at: string | null;
   has_reviewed_head: number;
   has_review_history: number;
+  bot_review_pending: number;
   diff: string;
   diff_truncated: number;
   automation_json: string;
@@ -349,6 +350,7 @@ export class AppDatabase {
         request_source TEXT,
         historical_request_source TEXT,
         imported INTEGER NOT NULL DEFAULT 0,
+        bot_review_pending INTEGER NOT NULL DEFAULT 0,
         created_at TEXT,
         updated_at TEXT NOT NULL,
         status TEXT NOT NULL,
@@ -619,6 +621,10 @@ export class AppDatabase {
           );
         `);
       });
+    if (!this.columns("prs").has("bot_review_pending"))
+      this.sqlite.exec(
+        "ALTER TABLE prs ADD COLUMN bot_review_pending INTEGER NOT NULL DEFAULT 0",
+      );
     if (!this.columns("prs").has("viewer_approval_json"))
       this.sqlite.exec("ALTER TABLE prs ADD COLUMN viewer_approval_json TEXT");
     if (!this.columns("prs").has("imported"))
@@ -1043,8 +1049,8 @@ export class AppDatabase {
         `INSERT INTO prs (
       id, number, repository, url, title, body, author, author_avatar_url, head_sha, base_sha, head_ref, base_ref,
       state, requested, requested_at, request_source, historical_request_source, created_at, updated_at, status, blocking_count, non_blocking_count,
-      additions, deletions, changed_files, last_reviewed_at, diff, diff_truncated, viewer_approval_json
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      additions, deletions, changed_files, last_reviewed_at, diff, diff_truncated, viewer_approval_json, bot_review_pending
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET number=excluded.number, repository=excluded.repository, url=excluded.url, title=excluded.title,
       body=excluded.body, author=excluded.author, author_avatar_url=excluded.author_avatar_url, head_sha=excluded.head_sha,
       base_sha=excluded.base_sha, head_ref=excluded.head_ref, base_ref=excluded.base_ref, state=excluded.state,
@@ -1057,7 +1063,7 @@ export class AppDatabase {
       created_at=COALESCE(excluded.created_at, prs.created_at), updated_at=excluded.updated_at, status=excluded.status,
       blocking_count=excluded.blocking_count, non_blocking_count=excluded.non_blocking_count, additions=excluded.additions,
       deletions=excluded.deletions, changed_files=excluded.changed_files, diff=excluded.diff, diff_truncated=excluded.diff_truncated,
-      viewer_approval_json=excluded.viewer_approval_json`,
+      viewer_approval_json=excluded.viewer_approval_json, bot_review_pending=excluded.bot_review_pending`,
       )
       .run(
         pr.id,
@@ -1078,7 +1084,9 @@ export class AppDatabase {
         pr.requested ? pr.requestSource : null,
         pr.requested && pr.requestSource !== "unknown"
           ? pr.requestSource
-          : null,
+          : pr.botReviewPending
+            ? "direct"
+            : null,
         pr.createdAt,
         pr.updatedAt,
         pr.status,
@@ -1091,6 +1099,7 @@ export class AppDatabase {
         diff,
         diffTruncated ? 1 : 0,
         pr.viewerApproval ? json(pr.viewerApproval) : null,
+        pr.botReviewPending ? 1 : 0,
       );
     return this.getPr(pr.id)!;
   }
@@ -1133,7 +1142,7 @@ export class AppDatabase {
     return (
       this.sqlite
         .prepare(
-          `${prProjection} WHERE state = 'OPEN' AND (requested = 1 OR imported = 1 OR has_review_history = 1) ORDER BY updated_at DESC, id`,
+          `${prProjection} WHERE state = 'OPEN' AND (requested = 1 OR imported = 1 OR has_review_history = 1 OR bot_review_pending = 1) ORDER BY updated_at DESC, id`,
         )
         .all() as unknown as PrRow[]
     ).map((row) => this.toPr(row, global, readiness));
@@ -1625,6 +1634,10 @@ export class AppDatabase {
         submission.error,
         submission.createdAt,
       );
+    if (submission.status === "submitted")
+      this.sqlite
+        .prepare("UPDATE prs SET bot_review_pending = 0 WHERE id = ?")
+        .run(prId);
   }
 
   getSubmission(submissionId: string): Submission | null {
@@ -1656,6 +1669,12 @@ export class AppDatabase {
         submission.error,
         submission.id,
       );
+    if (submission.status === "submitted")
+      this.sqlite
+        .prepare(
+          "UPDATE prs SET bot_review_pending = 0 WHERE id = (SELECT pr_id FROM submissions WHERE id = ?)",
+        )
+        .run(submission.id);
   }
 
   listSubmissions(prId: string): Submission[] {
@@ -1966,6 +1985,7 @@ export class AppDatabase {
       lastReviewedAt: row.last_reviewed_at,
       hasReviewedHead: row.has_reviewed_head === 1,
       hasReviewHistory: row.has_review_history === 1,
+      botReviewPending: row.bot_review_pending === 1,
       mergeReadiness: readiness.get(row.id) ?? null,
       automation,
       autoSubmissionOverride: parsed<AutoSubmissionOverride>(
