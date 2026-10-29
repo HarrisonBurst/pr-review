@@ -76,7 +76,9 @@ const fs = require("node:fs");
 const args = process.argv.slice(2);
 fs.appendFileSync(process.env.FAKE_GH_LOG, JSON.stringify(args) + "\\n");
 const responses = JSON.parse(fs.readFileSync(process.env.FAKE_GH_RESPONSES, "utf8"));
-const match = responses[args[1]] ?? { stderr: "gh: Not Found (HTTP 404)", code: 1 };
+const match = responses[args[1]] ?? (args[1].startsWith("search/issues?")
+  ? { stdout: JSON.stringify({ total_count: 0, incomplete_results: false, items: [] }) }
+  : { stderr: "gh: Not Found (HTTP 404)", code: 1 });
 let stdout = match.stdout ?? "";
 const jq = args.indexOf("--jq");
 if (jq >= 0 && args[jq + 1].startsWith("[.[] | {number, users:"))
@@ -1114,6 +1116,69 @@ async function httpSync(port: number): Promise<AppState> {
   return (await response.json()) as AppState;
 }
 
+test("reviewed-by search is paginated, bounded and rejects incomplete results before candidate scans", async () => {
+  const gh = await makeFakeGh();
+  const search =
+    "search/issues?q=repo%3Aowner%2Frepo%20is%3Apr%20is%3Aopen%20reviewed-by%3AReviewer&per_page=100&page=1";
+  try {
+    await gh.respond({
+      ...scopedRepositoryResponses(),
+      [search]: {
+        stdout: JSON.stringify({
+          total_count: 101,
+          incomplete_results: false,
+          items: Array.from({ length: 100 }, (_, index) => ({
+            number: 1000 + index,
+          })),
+        }),
+      },
+      [search.replace("&page=1", "&page=2")]: {
+        stdout: JSON.stringify({
+          total_count: 101,
+          incomplete_results: false,
+          items: [{ number: 7 }],
+        }),
+      },
+    });
+    const result = await new GithubCliAdapter().poll("owner/repo", []);
+    assert.deepEqual(
+      result.pullRequests.map((item) => item.pr.number),
+      [7, 8],
+    );
+    const calls = await gh.calls();
+    assert.equal(
+      calls.filter((args) => args[1].startsWith("search/issues?")).length,
+      2,
+    );
+    assert.equal(
+      calls.some((args) => args[1].startsWith("repos/owner/repo/issues/9")),
+      false,
+    );
+    assert.equal(
+      calls.some((args) => args[1].startsWith("repos/owner/repo/issues/10")),
+      false,
+    );
+    for (const response of [
+      { total_count: 1, incomplete_results: true, items: [{ number: 7 }] },
+      { total_count: 1001, incomplete_results: false, items: [{ number: 7 }] },
+      { total_count: 2, incomplete_results: false, items: [{ number: 7 }] },
+    ]) {
+      await gh.respond({
+        ...scopedRepositoryResponses(),
+        [search]: { stdout: JSON.stringify(response) },
+      });
+      await assert.rejects(
+        () => new GithubCliAdapter().poll("owner/repo", []),
+        (error: unknown) =>
+          error instanceof GithubRequestError &&
+          /incomplete/.test(error.message),
+      );
+    }
+  } finally {
+    await gh.cleanup();
+  }
+});
+
 test("sync tracks only open direct and own-team requests and never fetches unrelated pull requests", async () => {
   const gh = await makeFakeGh();
   const { service, reviewer, config, cleanup } = await makeService();
@@ -1141,7 +1206,9 @@ test("sync tracks only open direct and own-team requests and never fetches unrel
       !calls.some(
         (args) =>
           args[1].startsWith("repos/owner/repo/pulls/9") ||
-          args[1].startsWith("repos/owner/repo/pulls/10"),
+          args[1].startsWith("repos/owner/repo/pulls/10") ||
+          args[1].startsWith("repos/owner/repo/issues/9") ||
+          args[1].startsWith("repos/owner/repo/issues/10"),
       ),
       "unrelated pull requests are neither fetched nor diffed",
     );
@@ -1158,6 +1225,9 @@ test("sync tracks only open direct and own-team requests and never fetches unrel
     await gh.cleanup();
   }
 });
+
+const reviewedSearch =
+  "search/issues?q=repo%3Aowner%2Frepo%20is%3Apr%20is%3Aopen%20reviewed-by%3AReviewer&per_page=100&page=1";
 
 const withoutRequests = (responses: Responses): Responses => ({
   ...responses,
@@ -1194,6 +1264,13 @@ test("consumed sub-minute request and marked bot review enter the inbox without 
   };
   const responses = {
     ...withoutRequests(scopedRepositoryResponses()),
+    [reviewedSearch]: {
+      stdout: JSON.stringify({
+        total_count: 3,
+        incomplete_results: false,
+        items: [{ number: 7 }, { number: 9 }, { number: 10 }],
+      }),
+    },
     "repos/owner/repo/issues/7/events?per_page=100&page=1": events([
       event(701, "2026-01-01T00:00:00Z", { login: "Reviewer" }),
     ]),
@@ -1243,6 +1320,23 @@ test("consumed sub-minute request and marked bot review enter the inbox without 
     await current.sync();
     assert.deepEqual(inboxNumbers(current), [7]);
     assert.deepEqual(current.db.listJobs(), []);
+    await gh.respond({
+      ...responses,
+      "repos/owner/repo/issues/7/events?per_page=100&page=1": {
+        stderr: "Rate limited (HTTP 429)",
+        code: 1,
+      },
+    });
+    await current.sync();
+    assert.equal(current.getDetail(seven).pr.botReviewPending, true);
+    assert.deepEqual(inboxNumbers(current), [7]);
+    await gh.respond({
+      ...responses,
+      [reviewedSearch]: { stderr: "Search unavailable (HTTP 503)", code: 1 },
+    });
+    await assert.rejects(() => current.sync(), /Search unavailable/);
+    assert.equal(current.getDetail(seven).pr.botReviewPending, true);
+    await gh.respond(responses);
     current.db.updateSettings({
       automation: {
         ...automationOff,
@@ -1310,6 +1404,13 @@ test("confirmed local submission clears bot-only reason but retains the PR and d
   try {
     await gh.respond({
       ...withoutRequests(scopedRepositoryResponses()),
+      [reviewedSearch]: {
+        stdout: JSON.stringify({
+          total_count: 1,
+          incomplete_results: false,
+          items: [{ number: 7 }],
+        }),
+      },
       "repos/owner/repo/issues/7/events?per_page=100&page=1": events([
         event(701, "2026-01-01T00:00:00Z", { login: "Reviewer" }),
       ]),
