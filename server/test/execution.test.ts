@@ -18,6 +18,7 @@ import http from "node:http";
 import { setTimeout as delay } from "node:timers/promises";
 import { spawn } from "node:child_process";
 import { DockerExecutor } from "../execution/executor.js";
+import type { JsonLineDecoder } from "../stream.js";
 import { WorkflowBroker } from "../execution/broker.js";
 import { fixtureCredentials } from "../execution/auth.js";
 import { supportedImage, digest, policyDigest } from "../execution/policy.js";
@@ -344,6 +345,104 @@ test("disabled and unsupported configurations never select or discover a workflo
       /demo/,
     );
   } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("Docker Claude final-result admission with inert harness frames", async (t) => {
+  const fixture = await setup();
+  const executor = (await DockerExecutor.open(fixture.app))!;
+  const runner = executor as unknown as {
+    launch: (
+      input: Record<string, unknown>,
+      sourceDir?: string,
+      context?: { output: JsonLineDecoder },
+    ) => Promise<void>;
+  };
+  const review = (body: string) => ({
+    overview: "Synthetic review",
+    body,
+    verdict: "COMMENT",
+    rationale: "Synthetic rationale",
+    findings: [],
+  });
+  let mode = "success";
+  t.mock.method(executor, "check", async () => {});
+  t.mock.method(
+    runner,
+    "launch",
+    async (
+      _input: Record<string, unknown>,
+      _source?: string,
+      context?: { output: JsonLineDecoder },
+    ) => {
+      if (mode === "nonzero")
+        throw new Error(
+          "Docker policy/runtime or harness execution failed; no unsandboxed fallback was used",
+        );
+      const frames = [
+        {
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          structured_output: review("Earlier provisional review"),
+        },
+        {
+          type: "system",
+          subtype: "task_notification",
+          message: "Codex task finished",
+        },
+        {
+          type: "result",
+          subtype: mode === "error" ? "error" : "success",
+          is_error: mode === "error",
+          ...(mode === "missing-output"
+            ? {}
+            : {
+                structured_output:
+                  mode === "invalid-review"
+                    ? { answer: "wrong contract" }
+                    : review("Final authoritative review"),
+              }),
+        },
+      ];
+      const text = frames.map((frame) => JSON.stringify(frame) + "\n").join("");
+      context!.output.push(
+        Buffer.from(
+          mode === "malformed"
+            ? text + "not-json\n"
+            : mode === "oversize"
+              ? text + "x".repeat(4_000_001) + "\n"
+              : text,
+        ),
+      );
+    },
+  );
+  try {
+    const request = { ...fixture.request(executor), kind: "review" as const };
+    const result = await executor.execute(request);
+    assert.equal(
+      (result.value as { body: string }).body,
+      "Final authoritative review",
+    );
+    assert.match(result.log, /3 frames decoded, 0 malformed, 0 over/);
+    for (mode of [
+      "error",
+      "missing-output",
+      "malformed",
+      "oversize",
+      "invalid-review",
+      "nonzero",
+    ]) {
+      await assert.rejects(
+        executor.execute(request),
+        mode === "invalid-review"
+          ? /review|result|object/i
+          : /structured result|Docker policy\/runtime/,
+      );
+    }
+  } finally {
+    await executor.close();
     await rm(fixture.root, { recursive: true, force: true });
   }
 });

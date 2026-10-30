@@ -570,6 +570,108 @@ for (const harness of ["claude", "codex", "pi"] as HarnessId[])
     }
   });
 
+test("inert Claude multi-turn reviews publish only final valid drafts and preserve edited drafts on failed re-reviews", async () => {
+  const f = await fixture();
+  const previous = {
+    overview: "Synthetic provisional review",
+    body: "PROVISIONAL_FIXTURE_BODY",
+    verdict: "COMMENT",
+    findings: [],
+    rationale: "Synthetic rationale",
+  };
+  const final = { ...previous, body: "FINAL_FIXTURE_BODY" };
+  const harness = async (mode: string) => {
+    await writeFile(
+      path.join(f.bin, "claude"),
+      `#!${process.execPath}
+process.stdin.resume();
+process.stdin.on("end", () => {
+  const emit = frame => process.stdout.write(JSON.stringify(frame) + "\\n");
+  emit({type:"result",subtype:"success",is_error:false,structured_output:${JSON.stringify(previous)}});
+  emit({type:"system",subtype:"task_notification",message:"Codex completed"});
+  const frame = {type:"result",subtype:${JSON.stringify(mode === "error" ? "error" : "success")},is_error:${mode === "error"},structured_output:${JSON.stringify(mode === "invalid" ? { answer: "wrong contract" } : final)}};
+  if (${mode === "missing"}) delete frame.structured_output;
+  emit(frame);
+  if (${mode === "malformed"}) process.stdout.write("not-json\\n");
+  if (${mode === "nonzero"}) process.exitCode = 3;
+});
+`,
+    );
+    await chmod(path.join(f.bin, "claude"), 0o755);
+  };
+  const review = async () => {
+    assert.equal((await f.send(`${f.pr}/review`, {})).status, 202);
+    await f.service.processJob(f.service.db.listJobs("queued")[0]!);
+    return f.detail();
+  };
+  try {
+    f.service.github.submitReview = async () =>
+      assert.fail("No review submission is permitted");
+    await f.send("/sync", {});
+    assert.equal(
+      (
+        await f.send(
+          "/settings/harness",
+          {
+            version: 2,
+            workflow: "dangerous",
+            harness: "claude",
+            reviewer: { skillPath: f.app.reviewer.skillPath, model: null },
+            confirmation: dangerousConfirmation,
+          },
+          "PATCH",
+        )
+      ).status,
+      200,
+    );
+    await harness("error");
+    let detail = await review();
+    assert.equal(detail.runs[0].status, "failed");
+    assert.equal(detail.draft, null);
+    assert.equal(detail.drafts.length, 0);
+    assert.equal(detail.submissions.length, 0);
+    await harness("success");
+    detail = await review();
+    assert.equal(detail.runs[0].status, "completed");
+    assert.equal(detail.draft!.body, final.body);
+    assert.equal(detail.submissions.length, 0);
+    const original = detail.draft!;
+    assert.equal(
+      (
+        await f.send(
+          `${f.pr}/draft`,
+          {
+            draftId: original.id,
+            version: original.version,
+            body: "Manually edited fixture body",
+            verdict: original.verdict,
+            findings: original.findings,
+          },
+          "PUT",
+        )
+      ).status,
+      200,
+    );
+    for (const mode of [
+      "error",
+      "missing",
+      "malformed",
+      "nonzero",
+      "invalid",
+    ]) {
+      await harness(mode);
+      detail = await review();
+      assert.equal(detail.runs[0].status, "failed", mode);
+      assert.equal(detail.runs[0].result, null);
+      assert.equal(detail.draft!.body, "Manually edited fixture body");
+      assert.equal(detail.drafts.length, 1);
+      assert.equal(detail.submissions.length, 0);
+    }
+  } finally {
+    await f.close();
+  }
+});
+
 test("managed config derives existing settings without overwriting models/effort/resources; installation is explicit", async () => {
   const f = await fixture();
   try {
